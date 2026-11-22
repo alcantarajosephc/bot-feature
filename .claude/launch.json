@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "role-bots",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["apps/server/src/main.ts"],
+      "port": 4317
+    },
+    {
+      "name": "role-bots-live-sample",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=.env.live-sample", "apps/server/src/main.ts"],
+      "port": 4320
+    },
+    {
+      "name": "role-bots-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=.env.demo", "apps/server/src/main.ts"],
+      "port": 4318
+    }
+  ]
+}

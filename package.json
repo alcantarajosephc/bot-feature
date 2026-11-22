@@ -1,0 +1,29 @@
+{
+  "name": "agents-task",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p packages/core && tsc -p apps/server && tsc -p apps/web",
+    "dev:server": "node --watch apps/server/src/main.ts",
+    "dev:web": "npm run dev -w @agents/web",
+    "build": "npm run build -w @agents/web",
+    "start": "npm run build && node apps/server/src/main.ts",
+    "demo": "npm run build && node --env-file=.env.demo apps/server/src/main.ts",
+    "test:ui": "playwright test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}

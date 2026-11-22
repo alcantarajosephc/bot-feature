@@ -1,0 +1,9 @@
+{
+  "name": "sample-target",
+  "version": "1.0.0",
+  "description": "Tiny sample project the role bots work on in tests.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
