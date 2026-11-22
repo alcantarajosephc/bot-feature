@@ -211,6 +211,15 @@ describe("pipeline: guardrails and resilience", () => {
     expect(done.status).toBe("pr_ready");
   });
 
+  it("does not count a usage-limit pause against the ticket's time limit", async () => {
+    // 9 s budget, 10 s pause: the work itself fits easily, the pause alone exceeds the budget
+    env = await createTestTeam({ scenario: { usageLimitOnce: "cto", usageLimitMs: 10_000 }, settings: { maxTicketMinutes: 0.15 } });
+    const t = env.team.submit(SAMPLE_TICKET, env.repo.path);
+    const done = await env.team.waitForFinal(t.id);
+    expect(done.error ?? done.report ?? "").not.toMatch(/time limit|timed out/i);
+    expect(done.status).toBe("pr_ready");
+  }, 60_000);
+
   it("runs several tickets at once on separate branches", async () => {
     env = await createTestTeam({ settings: { ticketConcurrency: 2 } });
     const a = env.team.submit(SAMPLE_TICKET, env.repo.path);

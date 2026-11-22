@@ -626,13 +626,14 @@ export class Team {
         worker.setPaused(id, true);
         ctx.update({ status: "paused", resumeAt });
         this.log(id, "warn", `Usage limit reached (${res.limitHit.message}). Pausing until ${new Date(resumeAt).toLocaleTimeString()}.`);
+        const pausedAt = Date.now();
         try {
-          await this.sleep(id, resumeAt - Date.now(), ctx.signal);
+          await this.sleep(id, resumeAt - pausedAt, ctx.signal);
         } finally {
           worker.setPaused(id, false);
         }
-        // the limit pause must not eat into the ticket's time budget
-        ctx.deadline += Math.max(0, resumeAt - Date.now()) + 1;
+        // the limit pause must not eat into the ticket's time budget: give back the whole wait
+        ctx.deadline += Date.now() - pausedAt;
         ctx.update({ status: "running", resumeAt: undefined });
         this.log(id, "info", "Resuming after usage limit.");
         continue;

@@ -19,6 +19,8 @@ export interface ScenarioOptions {
   invalidOutput?: { stageId: string; times: number };
   /** Hit the usage limit once at this stage. */
   usageLimitOnce?: string;
+  /** How long until that usage limit resets (default 150 ms). */
+  usageLimitMs?: number;
   /** Dev also tries to write this (absolute) path, which the guard must refuse. */
   writeOutside?: string;
   /** Artificial delay per stage, for UI demos. */
@@ -67,7 +69,7 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
 
     if (opts.usageLimitOnce === req.stageId && !limitDone) {
       limitDone = true;
-      return { ...base, output: "", limitHit: { resetAt: Date.now() + 150, message: "Usage limit reached" } };
+      return { ...base, output: "", limitHit: { resetAt: Date.now() + (opts.usageLimitMs ?? 150), message: "Usage limit reached" } };
     }
     if (opts.invalidOutput?.stageId === req.stageId && n <= opts.invalidOutput.times) {
       return { ...base, output: "Sorry, I lost track and have no JSON for you." };
