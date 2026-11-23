@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { TicketBadge, TicketPicker } from "../components/common.tsx";
+import { TicketActions, TicketPicker } from "../components/common.tsx";
 import { TeamLog } from "../components/TeamLog.tsx";
 import { OfficeScene, type RoleView } from "../office/officeScene.ts";
 import { actions, latestLog, useApp } from "../store.ts";
@@ -51,12 +51,12 @@ export function OfficePage() {
   return (
     <div className="office-page">
       <div className="office-main">
-        <div className="toolbar">
+        <div className="toolbar" data-testid="toolbar">
           <span className="muted">Current ticket</span>
           <TicketPicker />
-          {ticket && <TicketBadge status={ticket.status} />}
+          <TicketActions />
           <span className="grow" />
-          <span className="small muted">Busy roles stay at their desks; idle ones wander. Click a character.</span>
+          <span className="small muted hint">Busy roles stay at their desks; idle ones wander. Click a character.</span>
         </div>
         <canvas ref={canvas} className="office-canvas" data-testid="office-canvas" aria-label="Office view: click a character to open its panel" />
         <div className="office-legend small">

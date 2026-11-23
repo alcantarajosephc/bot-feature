@@ -70,6 +70,56 @@ export function useTicketDetail(ticketId: string | undefined): TicketDetail | un
   return detail?.ticket.id === ticketId ? detail : undefined;
 }
 
+/** Status + the actions that make sense for the current ticket. Shown in the Canvas and Office toolbars. */
+export function TicketActions() {
+  const ticketId = useApp((s) => s.selectedTicketId);
+  const t = useApp((s) => (ticketId ? s.tickets[ticketId] : undefined));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  if (!t) return null;
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const canRetry = t.status === "error" || t.status === "cancelled";
+  return (
+    <>
+      <TicketBadge status={t.status} />
+      {t.status === "paused" && (
+        <>
+          <span className="small muted">resumes {t.resumeAt ? new Date(t.resumeAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "soon"}</span>
+          <button className="small-btn" disabled={busy} onClick={() => act(() => api.resumeNow(t.id))} title="Skip the wait and try again now">
+            Try now
+          </button>
+        </>
+      )}
+      {["queued", "running", "paused"].includes(t.status) && (
+        <button className="small-btn" disabled={busy} onClick={() => act(() => api.cancel(t.id))}>
+          Cancel
+        </button>
+      )}
+      {canRetry && (
+        <button className="small-btn primary" disabled={busy} onClick={() => act(() => api.retry(t.id))} title="Continue from the stage that stopped; finished roles are kept">
+          Retry
+        </button>
+      )}
+      {t.status === "error" && t.error && (
+        <span className="small error-text ellipsis" title={t.error}>
+          {t.error}
+        </span>
+      )}
+      {error && <span className="small error-text">{error}</span>}
+    </>
+  );
+}
+
 export function TicketPicker() {
   const tickets = useApp((s) => s.tickets);
   const selected = useApp((s) => s.selectedTicketId);

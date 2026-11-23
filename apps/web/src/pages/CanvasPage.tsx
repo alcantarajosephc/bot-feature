@@ -3,7 +3,7 @@ import "@xyflow/react/dist/style.css";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type IssuePreview } from "../api.ts";
-import { Avatar, Markdown, TicketBadge, TicketPicker, WorkerBadge } from "../components/common.tsx";
+import { Avatar, Markdown, TicketActions, TicketBadge, TicketPicker, WorkerBadge } from "../components/common.tsx";
 import { Modal } from "../components/Modal.tsx";
 import { StatusRows } from "../components/StatusRows.tsx";
 import { TeamLog } from "../components/TeamLog.tsx";
@@ -212,19 +212,9 @@ function PrNode() {
               View report
             </button>
           )}
-          {t.status === "paused" && (
-            <>
-              <p className="small">Usage limit reached. Resumes {t.resumeAt ? `at ${time(t.resumeAt)}` : "soon"}.</p>
-              <button onClick={() => api.resumeNow(t.id)}>Try now</button>
-            </>
-          )}
+          {t.status === "paused" && <p className="small">Usage limit reached. Resumes {t.resumeAt ? `at ${time(t.resumeAt)}` : "soon"}.</p>}
           {isActive(t) && t.stage && <p className="small muted">At stage: {t.stage}</p>}
           {t.error && <p className="error-text small">{t.error}</p>}
-          {(t.status === "error" || t.status === "cancelled") && (
-            <button onClick={() => api.retry(t.id)} data-testid="retry">
-              Retry from last stage
-            </button>
-          )}
           {t.branch && (
             <p className="small muted">
               Branch <code>{t.branch}</code>
@@ -340,17 +330,12 @@ export function CanvasPage() {
   return (
     <div className="canvas-page">
       <div className="canvas-main">
-        <div className="toolbar">
+        <div className="toolbar" data-testid="toolbar">
           <span className="muted">Current ticket</span>
           <TicketPicker />
-          {ticket && <TicketBadge status={ticket.status} />}
-          {ticket && isActive(ticket) && (
-            <button className="small-btn" onClick={() => api.cancel(ticket.id)}>
-              Cancel
-            </button>
-          )}
+          <TicketActions />
           <span className="grow" />
-          <span className="small muted">Click a role to see its output</span>
+          <span className="small muted hint">Click a role to see its output</span>
         </div>
         <div className="flow" data-testid="flow">
           {roles.length > 0 && (

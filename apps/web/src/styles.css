@@ -255,6 +255,26 @@ label.inline input,
   padding: 8px 14px;
   border-bottom: 1px solid var(--line);
 }
+.toolbar > * {
+  flex-shrink: 0;
+}
+.toolbar .ticket-picker,
+.toolbar .ellipsis {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.toolbar .hint {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+@media (max-width: 1300px) {
+  .toolbar .hint {
+    display: none;
+  }
+}
 .ticket-picker {
   width: auto;
   max-width: 420px;

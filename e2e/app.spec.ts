@@ -142,3 +142,20 @@ test("settings: save per-role models and keep API keys out of the browser", asyn
   await page.getByTestId("role-node-ceo").click();
   await expect(page.getByTestId("role-panel")).toContainText("claude-sonnet-5-5");
 });
+
+test("ticket actions sit in the toolbar of both Canvas and Office: cancel, then retry", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("conn")).toHaveText(/live/);
+  await page.getByLabel("Ticket title").fill("Add a greet function (retry test)");
+  await page.getByRole("button", { name: "Send to the team" }).click();
+  const toolbar = page.getByTestId("toolbar");
+  await toolbar.getByRole("button", { name: "Cancel" }).click();
+  await expect(toolbar.getByTestId("ticket-status")).toHaveText("Cancelled");
+
+  await page.getByRole("link", { name: "Office" }).click();
+  const officeBar = page.getByTestId("toolbar");
+  await expect(officeBar.getByTestId("ticket-status")).toHaveText("Cancelled");
+  await officeBar.getByRole("button", { name: "Retry" }).click();
+  await expect(officeBar.getByTestId("ticket-status")).toHaveText(/PR ready/, { timeout: 45_000 });
+  await expect(officeBar.getByRole("button", { name: "Retry" })).toBeHidden();
+});
