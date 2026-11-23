@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type TicketDetail } from "../api.ts";
 import { STATUS_LABEL, STATUS_TONE, WORKER_TONE } from "../format.ts";
 import { avatarUrl } from "../office/sprites.ts";
+import { FollowUpBox } from "./FollowUp.tsx";
+import { Modal } from "./Modal.tsx";
 import { actions, useApp } from "../store.ts";
 import type { PublicRole, TicketStatus, WorkerStatus } from "../types.ts";
 
@@ -76,6 +78,7 @@ export function TicketActions() {
   const t = useApp((s) => (ticketId ? s.tickets[ticketId] : undefined));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [followUpOpen, setFollowUpOpen] = useState(false);
   if (!t) return null;
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -89,8 +92,14 @@ export function TicketActions() {
     }
   };
   const canRetry = t.status === "error" || t.status === "cancelled";
+  const canFollowUp = !!t.prBody && !["queued", "running", "paused"].includes(t.status);
   return (
     <>
+      {followUpOpen && (
+        <Modal title={`Follow up: ${t.title}`} onClose={() => setFollowUpOpen(false)}>
+          <FollowUpBox ticket={t} onDone={() => setFollowUpOpen(false)} />
+        </Modal>
+      )}
       <TicketBadge status={t.status} />
       {t.status === "paused" && (
         <>
@@ -103,6 +112,11 @@ export function TicketActions() {
       {["queued", "running", "paused"].includes(t.status) && (
         <button className="small-btn" disabled={busy} onClick={() => act(() => api.cancel(t.id))}>
           Cancel
+        </button>
+      )}
+      {canFollowUp && (
+        <button className="small-btn" onClick={() => setFollowUpOpen(true)} title="Request a change, address review comments, or update from main">
+          Follow up
         </button>
       )}
       {canRetry && (

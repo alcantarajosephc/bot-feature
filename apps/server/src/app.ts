@@ -114,6 +114,18 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
     return { ok: true };
   });
 
+  const followUpBody = z.object({ kind: z.enum(["change", "review", "update"]), text: z.string().max(20_000).optional() });
+
+  app.post<{ Params: { id: string } }>("/api/tickets/:id/follow-up", async (req, reply) => {
+    const body = followUpBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "Choose a follow-up: change, review or update." });
+    try {
+      return await rt.team.followUp(req.params.id, body.data);
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/tickets/:id/retry", async (req, reply) => {
     try {
       return rt.team.retry(req.params.id);

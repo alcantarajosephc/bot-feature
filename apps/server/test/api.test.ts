@@ -97,6 +97,22 @@ describe("API", () => {
     expect(done.prBody).toContain("Closes a/b#8");
   });
 
+  it("runs a follow-up on a finished ticket", async () => {
+    const t = (await app.inject({ method: "POST", url: "/api/tickets", headers: H, payload: { title: "Add a greet function" } })).json() as Ticket;
+    await rt.team.waitForFinal(t.id);
+    const url = `/api/tickets/${t.id}/follow-up`;
+    expect((await app.inject({ method: "POST", url, headers: H, payload: { kind: "nope" } })).statusCode).toBe(400);
+    const review = await app.inject({ method: "POST", url, headers: H, payload: { kind: "review" } });
+    expect(review.statusCode).toBe(400);
+    expect(review.json().error).toMatch(/no PR/i);
+    const ok = await app.inject({ method: "POST", url, headers: H, payload: { kind: "change", text: "Also trim names." } });
+    expect(ok.statusCode).toBe(200);
+    const done = await rt.team.waitForFinal(t.id);
+    expect(done.revisions?.[0]).toMatchObject({ n: 1, kind: "change", status: "done" });
+    const d = (await app.inject({ method: "GET", url: `/api/tickets/${t.id}`, headers: H })).json();
+    expect(d.runs.filter((r: { revision?: number }) => r.revision === 1).length).toBe(4);
+  });
+
   it("validates and saves settings", async () => {
     const bad = await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { ticketConcurrency: 99 } });
     expect(bad.statusCode).toBe(400);

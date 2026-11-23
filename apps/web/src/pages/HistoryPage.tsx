@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.ts";
 import { Markdown, TicketBadge, useTicketDetail } from "../components/common.tsx";
+import { FollowUpBox } from "../components/FollowUp.tsx";
 import { dateTime, duration, isActive, time, tokens } from "../format.ts";
 import { actions, useApp } from "../store.ts";
 
@@ -104,6 +105,33 @@ export function TicketDetailPage() {
       {t.description && <blockquote className="desc">{t.description}</blockquote>}
       {t.error && <p className="error-text">{t.error}</p>}
 
+      {!!t.revisions?.length && (
+        <div className="card" data-testid="revisions">
+          <h3>Revisions</h3>
+          {t.revisions.map((r) => (
+            <div key={r.n} className="revision">
+              <div className="run-head">
+                <strong>Revision {r.n}</strong>
+                <span className="muted">{r.kind === "change" ? "Change request" : r.kind === "review" ? "Review comments" : "Update from main"}</span>
+                <span className={`badge tone-${r.status === "done" ? "ok" : r.status === "running" ? "busy" : r.status === "failed" ? "bad" : "muted"}`}>{r.status}</span>
+                <span className="muted small">{dateTime(r.startedAt)}</span>
+              </div>
+              <blockquote className="desc">{r.request.length > 600 ? r.request.slice(0, 600) + "…" : r.request}</blockquote>
+              {r.summary && <p className="small">{r.summary}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {t.prBody && (
+        <details className="card" open={!isActive(t)}>
+          <summary>
+            <strong>Follow up</strong> <span className="muted small">request a change, address review comments, or update from main</span>
+          </summary>
+          <FollowUpBox ticket={t} />
+        </details>
+      )}
+
       <div className="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "runs"} onClick={() => setTab("runs")}>
           Role outputs ({runs.length})
@@ -130,8 +158,9 @@ export function TicketDetailPage() {
                 <span style={{ color: role?.color }}>{role ? `${role.title} (${role.name})` : r.roleId}</span>
                 <span className="muted">
                   {r.stageId}
-                  {r.round > 1 ? ` · round ${r.round}` : ""}
+                  {r.round > 1 && !r.revision ? ` · round ${r.round}` : ""}
                 </span>
+                {r.revision && <span className="badge tone-busy">revision {r.revision}</span>}
                 <span className={`badge tone-${r.status === "done" ? "ok" : r.status === "running" ? "busy" : "bad"}`}>{r.status}</span>
                 <span className="muted small">
                   {tokens(r.usage)} tokens · {r.endedAt ? duration(r.endedAt - r.startedAt) : "running"}

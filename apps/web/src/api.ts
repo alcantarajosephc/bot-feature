@@ -49,6 +49,7 @@ export const api = {
   previewIssue: (ref: string) => req<IssuePreview>("GET", `/api/issues/preview?ref=${encodeURIComponent(ref)}`),
   cancel: (id: string) => req("POST", `/api/tickets/${id}/cancel`),
   retry: (id: string) => req("POST", `/api/tickets/${id}/retry`),
+  followUp: (id: string, kind: "change" | "review" | "update", text: string) => req<Ticket>("POST", `/api/tickets/${id}/follow-up`, { kind, text }),
   resumeNow: (id: string) => req("POST", `/api/tickets/${id}/resume-now`),
   settings: () => req<{ settings: AppSettings; secrets: Record<string, { set: boolean }> }>("GET", "/api/settings"),
   saveSettings: (patch: Partial<AppSettings>) => req<{ settings: AppSettings; secrets: Record<string, { set: boolean }> }>("PUT", "/api/settings", patch),

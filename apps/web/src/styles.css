@@ -368,6 +368,34 @@ label.inline input,
   background: var(--panel-2);
   color: var(--text);
 }
+.follow-up {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.follow-up .seg {
+  margin-bottom: 0;
+}
+.seg button[aria-checked="true"] {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.follow-up > button {
+  align-self: flex-start;
+}
+.revision {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.revision:first-of-type {
+  border-top: none;
+  margin-top: 0;
+}
+details.card > summary {
+  cursor: pointer;
+}
 .issue-preview {
   border: 1px solid var(--line);
   border-left: 3px solid #a78bfa;

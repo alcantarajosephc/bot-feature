@@ -84,15 +84,62 @@ export class GitService {
     });
   }
 
-  /** Stages and commits everything in the worktree. Returns the new sha, or undefined if there was nothing to commit. */
+  private async identity(worktree: string): Promise<string[]> {
+    const hasIdentity = !!(await this.tryGit(worktree, ["config", "user.email"]));
+    return hasIdentity ? [] : ["-c", `user.name=${BOT_NAME}`, "-c", `user.email=${BOT_EMAIL}`];
+  }
+
+  async isMerging(worktree: string): Promise<boolean> {
+    return !!(await this.tryGit(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]));
+  }
+
+  /** Stages and commits everything in the worktree. Returns the new sha, or undefined if there was nothing to commit. Concludes an in-progress merge. */
   async commitAll(worktree: string, message: string): Promise<string | undefined> {
     await this.git(worktree, ["add", "-A"]);
+    const merging = await this.isMerging(worktree);
     const staged = await exec("git", ["diff", "--cached", "--quiet"], { cwd: worktree });
-    if (staged.code === 0) return undefined;
-    const hasIdentity = !!(await this.tryGit(worktree, ["config", "user.email"]));
-    const identity = hasIdentity ? [] : ["-c", `user.name=${BOT_NAME}`, "-c", `user.email=${BOT_EMAIL}`];
-    await this.git(worktree, [...identity, "commit", "--no-verify", "-m", message]);
+    if (staged.code === 0 && !merging) return undefined;
+    await this.git(worktree, [...(await this.identity(worktree)), "commit", "--no-verify", "-m", message]);
     return this.git(worktree, ["rev-parse", "HEAD"]);
+  }
+
+  /** Re-creates a ticket's worktree from its existing branch (e.g. after it was cleaned up). */
+  async attachWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; branch: string }): Promise<string> {
+    return this.withLock(o.repoPath, async () => {
+      fs.mkdirSync(o.worktreesDir, { recursive: true });
+      await this.tryGit(o.repoPath, ["worktree", "prune"]);
+      const wtPath = path.join(o.worktreesDir, `${o.slug.slice(0, 24)}-${o.ticketId}`);
+      await this.git(o.repoPath, ["worktree", "add", wtPath, o.branch]);
+      return wtPath;
+    });
+  }
+
+  /**
+   * Merges the latest default branch into the worktree's branch (never a rebase, so nothing needs force-pushing).
+   * Returns the merged commit and any conflicted files; on conflicts the merge is left in progress for Dev to resolve.
+   */
+  async mergeDefault(worktree: string, defaultBranch: string): Promise<{ target: string; conflicts: string[] }> {
+    await this.tryGit(worktree, ["fetch", "origin", defaultBranch], 90_000);
+    const remoteRef = `refs/remotes/origin/${defaultBranch}`;
+    const ref = (await this.tryGit(worktree, ["rev-parse", "--verify", "--quiet", remoteRef])) ? remoteRef : defaultBranch;
+    const target = await this.git(worktree, ["rev-parse", ref]);
+    const r = await exec("git", [...(await this.identity(worktree)), "merge", "--no-ff", "--no-edit", target], { cwd: worktree, timeoutMs: 120_000 });
+    if (r.code === 0) return { target, conflicts: [] };
+    const out = await this.git(worktree, ["diff", "--name-only", "--diff-filter=U"]);
+    const conflicts = out ? out.split(/\r?\n/).filter(Boolean) : [];
+    if (!conflicts.length) throw new Error(`Merging ${defaultBranch} failed: ${(r.stderr || r.stdout).trim()}`);
+    return { target, conflicts };
+  }
+
+  /** Files that still contain conflict markers. */
+  filesWithMarkers(worktree: string, files: string[]): string[] {
+    return files.filter((f) => {
+      try {
+        return /^(<{7}|>{7})( |$)|^={7}$/m.test(fs.readFileSync(path.join(worktree, f), "utf8"));
+      } catch {
+        return false;
+      }
+    });
   }
 
   async changedFiles(worktree: string, baseSha: string): Promise<string[]> {

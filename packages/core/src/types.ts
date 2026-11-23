@@ -56,6 +56,20 @@ export interface TicketInput {
   sourceUrl?: string;
 }
 
+/** Work requested on a ticket after its PR exists. */
+export type FollowUpKind = "change" | "review" | "update";
+
+export interface RevisionInfo {
+  n: number;
+  kind: FollowUpKind;
+  /** What was asked (the change request, the review comments, or the merge). */
+  request: string;
+  status: "running" | "done" | "failed" | "cancelled";
+  startedAt: number;
+  endedAt?: number;
+  summary?: string;
+}
+
 export interface Ticket extends TicketInput {
   id: string;
   repoPath: string;
@@ -71,6 +85,10 @@ export interface Ticket extends TicketInput {
   error?: string;
   resumeAt?: number;
   usage: Usage;
+  /** Follow-up rounds after the PR was first published. */
+  revisions?: RevisionInfo[];
+  /** When the PR was last pushed/updated (used to find new review comments). */
+  lastPublishedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -83,6 +101,8 @@ export interface StageRun {
   stageId: string;
   roleId: string;
   round: number;
+  /** Set for runs that belong to a follow-up revision. */
+  revision?: number;
   status: RunStatus;
   startedAt: number;
   endedAt?: number;

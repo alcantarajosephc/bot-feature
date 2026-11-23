@@ -35,6 +35,18 @@ node --env-file=.env.demo apps/server/src/main.ts   # scripted demo team + sampl
 - Node 24+, git, GitHub CLI (`gh auth login`)
 - Claude Code CLI signed in with your subscription (`claude`, then log in). Run `claude update` if Settings says your version does not support the configured model.
 
+## After the PR opens: follow-ups
+
+Keep working on the same ticket instead of creating a new one. Click **Follow up** in the Canvas/Office toolbar, or use the box on the ticket's History page:
+
+| Follow-up | What happens |
+|---|---|
+| **Request a change** | Your text goes to Dev; then QA, Security (diff), Docs and the test gate run again |
+| **Address review comments** | New PR comments from people with write access (reviews, conversation, inline code comments) go to Dev. Comments from anyone else are ignored |
+| **Update from main / fix conflicts** | The latest default branch is merged in (never rebased, never force-pushed). Clean merge: only QA + test gate. Conflicts: Dev resolves them, the app checks no conflict markers remain, then QA + Security |
+
+Each follow-up pushes new commits to the **same branch and PR**, adds a "Revisions" section to the PR description, and shows up as **Revision N** on the ticket with its own role outputs. CEO, PM, Designer and CTO don't run again, so a follow-up uses roughly a third of a full run.
+
 ## Views
 
 | View | What it shows |

@@ -1,6 +1,6 @@
 import type { RoleConfig, StageSpec } from "../roles/config.ts";
 import { renderOutput } from "../roles/render.ts";
-import type { Ticket } from "../types.ts";
+import type { RevisionInfo, Ticket } from "../types.ts";
 
 export interface Feedback {
   from: string;
@@ -72,6 +72,22 @@ function stats(t: Ticket): string {
   return `Agent turns: ${u.turns} · Tokens: ${tokens.toLocaleString("en-US")} (in ${u.inputTokens.toLocaleString("en-US")}, out ${u.outputTokens.toLocaleString("en-US")}, cache ${(u.cacheReadTokens + u.cacheWriteTokens).toLocaleString("en-US")})`;
 }
 
+const KIND_LABEL: Record<RevisionInfo["kind"], string> = {
+  change: "Change request",
+  review: "Review comments",
+  update: "Update from default branch",
+};
+
+function revisionsSection(revisions: RevisionInfo[] | undefined): string {
+  const done = (revisions ?? []).filter((r) => r.status === "done" || r.status === "running");
+  if (!done.length) return "";
+  const items = done.map((r) => {
+    const req = r.request.length > 1200 ? r.request.slice(0, 1200) + "…" : r.request;
+    return `### Revision ${r.n}: ${KIND_LABEL[r.kind]}\n\n${quote(req)}${r.summary ? `\n\n**Result:** ${r.summary}` : ""}`;
+  });
+  return `## Revisions\n\n${items.join("\n\n")}`;
+}
+
 export function buildPrBody(ctx: PrContext): string {
   const t = ctx.ticket;
   const dev = ctx.outputs.dev as { summary?: string } | undefined;
@@ -80,6 +96,8 @@ export function buildPrBody(ctx: PrContext): string {
     `## Ticket\n\n**${t.title}**${ref ? ` (${ref})` : ""}\n\n${quote(t.description || "(no description)")}`,
     `## Summary\n\n${dev?.summary ?? "See the developer section below."}` + (ctx.diffStat ? `\n\n\`\`\`\n${ctx.diffStat}\n\`\`\`` : ""),
   ];
+  const revs = revisionsSection(t.revisions);
+  if (revs) parts.push(revs);
   if (ctx.verify) {
     parts.push(
       "skipped" in ctx.verify

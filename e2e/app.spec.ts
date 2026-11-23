@@ -159,3 +159,31 @@ test("ticket actions sit in the toolbar of both Canvas and Office: cancel, then 
   await expect(officeBar.getByTestId("ticket-status")).toHaveText(/PR ready/, { timeout: 45_000 });
   await expect(officeBar.getByRole("button", { name: "Retry" })).toBeHidden();
 });
+
+test("a follow-up change request reruns Dev onward on the same ticket and shows as a revision", async ({ page }) => {
+  await page.goto("/");
+  const toolbar = page.getByTestId("toolbar");
+  await expect(toolbar.getByTestId("ticket-status")).toHaveText(/PR ready/);
+  await toolbar.getByRole("button", { name: "Follow up" }).click();
+
+  const dialog = page.getByRole("dialog");
+  // a dry-run ticket has no PR on GitHub, so there are no review comments to address
+  await expect(dialog.getByRole("radio", { name: "Address review comments" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Send follow-up" })).toBeDisabled();
+  await dialog.getByLabel("Follow-up details").fill("Also trim spaces around names.");
+  await dialog.getByRole("button", { name: "Send follow-up" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect(toolbar.getByTestId("ticket-status")).toHaveText(/Running|Queued/);
+  await expect(toolbar.getByTestId("ticket-status")).toHaveText(/PR ready/, { timeout: 45_000 });
+
+  await page.getByRole("link", { name: "History" }).click();
+  await page.getByTestId("history-row").first().click();
+  const revisions = page.getByTestId("revisions");
+  await expect(revisions).toContainText("Revision 1");
+  await expect(revisions).toContainText("Also trim spaces around names.");
+  await expect(revisions).toContainText("done");
+  await expect(page.getByTestId("detail-run").filter({ hasText: "revision 1" })).toHaveCount(4);
+  await page.getByRole("tab", { name: "PR description" }).click();
+  await expect(page.getByTestId("pr-body")).toContainText("Revision 1: Change request");
+});

@@ -25,6 +25,11 @@ export interface ScenarioOptions {
   writeOutside?: string;
   /** Artificial delay per stage, for UI demos. */
   delayMs?: number;
+  /**
+   * When Dev is asked to resolve merge conflicts, write this file. After `times` attempts
+   * the content is written with conflict-marker lines removed.
+   */
+  conflictResolution?: { path: string; content: string; times?: number };
 }
 
 export const SAMPLE_TICKET = {
@@ -61,6 +66,7 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
   let hasDep = false;
   let depRejections = 0;
   let limitDone = false;
+  let conflictAttempts = 0;
   const pkg = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, "package.json"), "utf8"));
 
   return (req: AgentRunRequest): FakeReply => {
@@ -135,6 +141,12 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
           { path: "test/greet.test.js", content: TEST_FILE },
         ];
         if (opts.writeOutside) writes.push({ path: opts.writeOutside, content: "should never be written" });
+        const cr = opts.conflictResolution;
+        if (cr && /conflict/i.test(req.prompt)) {
+          conflictAttempts++;
+          const clean = cr.content.split("\n").filter((l) => !/^(<{7}|={7}|>{7})/.test(l)).join("\n");
+          writes.push({ path: cr.path, content: conflictAttempts <= (cr.times ?? Infinity) ? cr.content : clean });
+        }
         if (opts.depRejectTimes && req.round === 1) {
           hasDep = true;
           writes.push({ path: "package.json", content: JSON.stringify({ ...pkg, dependencies: { "left-pad": "^1.3.0" } }, null, 2) + "\n" });

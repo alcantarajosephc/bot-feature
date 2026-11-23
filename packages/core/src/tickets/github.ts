@@ -48,6 +48,60 @@ const defaultRunner: GhRunner = (args) => exec("gh", args, { timeoutMs: 30_000 }
 
 const MAX_DESCRIPTION = 20_000;
 
+export interface ReviewComment {
+  author: string;
+  body: string;
+  path?: string;
+  line?: number;
+}
+
+/** Reads review feedback on a PR. */
+export interface ReviewSource {
+  fetch(prUrl: string, since?: number): Promise<ReviewComment[]>;
+}
+
+/** Only people who can push to the repo may steer the team; anyone can comment on a public repo. */
+const TRUSTED = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/** Collects PR reviews, conversation comments and inline code comments via the GitHub CLI. */
+export class GhReviewSource implements ReviewSource {
+  private readonly gh: GhRunner;
+  constructor(gh: GhRunner = defaultRunner) {
+    this.gh = gh;
+  }
+
+  async fetch(prUrl: string, since = 0): Promise<ReviewComment[]> {
+    const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i.exec(prUrl);
+    if (!m) throw new Error(`Not a GitHub pull request URL: ${prUrl}`);
+    const repo = `${m[1]}/${m[2]}`;
+    const n = m[3]!;
+    const view = await this.gh(["pr", "view", n, "-R", repo, "--json", "reviews,comments"]);
+    if (view.code !== 0) throw new Error(`Could not read ${repo}#${n}: ${(view.stderr || view.stdout).trim().split("\n")[0]}`);
+    const pr = JSON.parse(view.stdout) as {
+      reviews?: { author?: { login?: string }; authorAssociation?: string; body?: string; submittedAt?: string }[];
+      comments?: { author?: { login?: string }; authorAssociation?: string; body?: string; createdAt?: string }[];
+    };
+    const fresh = (ts?: string) => !ts || Date.parse(ts) > since;
+    const out: ReviewComment[] = [];
+    for (const r of pr.reviews ?? []) {
+      if (TRUSTED.has(r.authorAssociation ?? "") && r.body?.trim() && fresh(r.submittedAt)) out.push({ author: r.author?.login ?? "reviewer", body: r.body.trim() });
+    }
+    for (const c of pr.comments ?? []) {
+      if (TRUSTED.has(c.authorAssociation ?? "") && c.body?.trim() && fresh(c.createdAt)) out.push({ author: c.author?.login ?? "reviewer", body: c.body.trim() });
+    }
+    const inline = await this.gh(["api", `repos/${repo}/pulls/${n}/comments?per_page=100`]);
+    if (inline.code === 0) {
+      const list = JSON.parse(inline.stdout) as { user?: { login?: string }; author_association?: string; body?: string; path?: string; line?: number | null; original_line?: number | null; created_at?: string }[];
+      for (const c of list) {
+        if (TRUSTED.has(c.author_association ?? "") && c.body?.trim() && fresh(c.created_at)) {
+          out.push({ author: c.user?.login ?? "reviewer", body: c.body.trim(), path: c.path, line: c.line ?? c.original_line ?? undefined });
+        }
+      }
+    }
+    return out;
+  }
+}
+
 /** Reads GitHub issues with the GitHub CLI (your existing `gh auth login`, so private repos work too). */
 export class GitHubIssueSource implements TicketSource {
   readonly id = "github";

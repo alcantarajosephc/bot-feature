@@ -7,6 +7,7 @@ import {
   FakeProvider,
   GhCliPublisher,
   GitHubIssueSource,
+  GhReviewSource,
   type GhRunner,
   GitService,
   Store,
@@ -70,6 +71,11 @@ class SwitchingPublisher implements PrPublisher {
     const s = this.settings();
     return s.dryRun || s.provider === "demo" ? this.dry.publish(req) : this.gh.publish(req);
   }
+
+  update(req: PublishRequest & { prUrl?: string }): Promise<PublishResult> {
+    const s = this.settings();
+    return s.dryRun || s.provider === "demo" ? this.dry.update(req) : this.gh.update(req);
+  }
 }
 
 export interface Runtime {
@@ -121,6 +127,7 @@ export function createRuntime(o: RuntimeOptions): Runtime {
     publisher: new SwitchingPublisher(o.dataDir, git, getSettings),
     dataDir: o.dataDir,
     settings: teamSettingsOf(settings),
+    reviews: new GhReviewSource(o.ghRunner),
   });
   return {
     dataDir: o.dataDir,

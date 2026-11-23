@@ -10,7 +10,8 @@ import { parseRoleOutput } from "../roles/parseOutput.ts";
 import { renderOutput } from "../roles/render.ts";
 import { jsonSchemaFor, schemasByKind } from "../roles/schemas.ts";
 import type { Store } from "../store/store.ts";
-import { addUsage, emptyUsage, FINAL_STATUSES, type LogKind, type StageRun, type Ticket, type TicketInput, type Usage } from "../types.ts";
+import { addUsage, emptyUsage, FINAL_STATUSES, type FollowUpKind, type LogKind, type RevisionInfo, type StageRun, type Ticket, type TicketInput, type Usage } from "../types.ts";
+import type { ReviewSource } from "../tickets/github.ts";
 import { exec, tail } from "../util/exec.ts";
 import { RoleWorker } from "../workers/roleWorker.ts";
 import { evaluateGate } from "./gates.ts";
@@ -57,6 +58,14 @@ export interface TeamOptions {
   bus?: EventBus;
   git?: GitService;
   settings?: Partial<TeamSettings>;
+  /** Reads PR review comments for "address review comments" follow-ups. */
+  reviews?: ReviewSource;
+}
+
+export interface FollowUpRequest {
+  kind: FollowUpKind;
+  /** Required for "change"; an optional extra note for the other kinds. */
+  text?: string;
 }
 
 interface RunState {
@@ -71,6 +80,8 @@ interface RunState {
   rescued: boolean;
   rescueNext: boolean;
   verify?: { command: string; passed: boolean; output: string } | { skipped: string };
+  /** Set while a follow-up revision runs: only these stages run, in pipeline order. */
+  revision?: { n: number; kind: FollowUpKind; stages: string[]; conflicts: string[]; mergeDone: boolean };
 }
 
 class Cancelled extends Error {
@@ -219,6 +230,113 @@ export class Team {
     return next;
   }
 
+  /**
+   * Starts a follow-up on a ticket whose PR already exists: a change request, the PR's review comments,
+   * or bringing the branch up to date with the default branch. Runs a short pipeline (Dev onward) on the same branch.
+   */
+  async followUp(id: string, req: FollowUpRequest): Promise<Ticket> {
+    const t = this.o.store.getTicket(id);
+    if (!t) throw new Error("Ticket not found.");
+    if (this.controllers.has(id) || this.queue.includes(id) || ["queued", "running", "paused"].includes(t.status)) {
+      throw new Error("This ticket is already being worked on. Wait for it to finish first.");
+    }
+    if (!t.prBody || !t.branch) throw new Error("Follow-ups are for tickets that produced a PR.");
+    const note = (req.text ?? "").trim();
+    let request: string;
+    if (req.kind === "change") {
+      if (!note) throw new Error("Describe the change you want.");
+      request = note;
+    } else if (req.kind === "review") {
+      if (!t.prUrl) throw new Error("This ticket has no PR on GitHub (it was a dry run), so there are no review comments to read.");
+      if (!this.o.reviews) throw new Error("Reading review comments is not set up.");
+      const comments = await this.o.reviews.fetch(t.prUrl, t.lastPublishedAt);
+      if (!comments.length) throw new Error("No new review comments from people with write access since the PR was last updated.");
+      request =
+        "Address these PR review comments:\n" +
+        comments.map((c) => `- ${c.path ? `(${c.path}${c.line ? `:${c.line}` : ""}) ` : ""}@${c.author}: ${c.body.replace(/\r?\n/g, "\n  ")}`).join("\n") +
+        (note ? `\n\nAlso: ${note}` : "");
+    } else {
+      request = `Bring the branch up to date with ${t.defaultBranch ?? "the default branch"} and fix any merge conflicts.${note ? `\n\n${note}` : ""}`;
+    }
+
+    const state = this.o.store.loadState<RunState>(id) ?? this.initialState();
+    const fresh = this.initialState();
+    const n = (t.revisions?.length ?? 0) + 1;
+    const fromDev = this.revisionStages();
+    state.sendBacks = {};
+    state.limits = fresh.limits;
+    state.rescued = false;
+    state.rescueNext = false;
+    state.verify = undefined;
+    state.pending = {};
+    state.index = 0;
+    state.revision = { n, kind: req.kind, stages: req.kind === "update" ? [] : fromDev, conflicts: [], mergeDone: false };
+    if (req.kind !== "update") {
+      const devStage = fromDev[0]!;
+      state.pending[devStage] = [{ from: "follow-up request", to: devStage, text: request, round: n, kind: "sendBack" }];
+    }
+    this.o.store.saveState(id, state);
+
+    const info: RevisionInfo = { n, kind: req.kind, request, status: "running", startedAt: Date.now() };
+    const next: Ticket = { ...t, status: "queued", error: undefined, report: undefined, revisions: [...(t.revisions ?? []), info], updatedAt: Date.now() };
+    this.saveAndEmit(next);
+    this.log(id, "info", `Follow-up ${n} received (${req.kind === "change" ? "change request" : req.kind === "review" ? "review comments" : `update from ${t.defaultBranch}`}).`);
+    this.queue.push(id);
+    this.pump();
+    return next;
+  }
+
+  /** Stages a revision may use: the first Dev stage and everything after it. */
+  private revisionStages(): string[] {
+    const stages = this.o.pipeline.stages;
+    const i = stages.findIndex((s) => this.o.roles.find((r) => r.id === s.role)?.kind === "dev");
+    return stages.slice(Math.max(0, i)).map((s) => s.id);
+  }
+
+  private kindOf(stageId: string): string | undefined {
+    const st = this.o.pipeline.stages.find((s) => s.id === stageId);
+    return this.o.roles.find((r) => r.id === st?.role)?.kind;
+  }
+
+  private activeStages(s: RunState): StageSpec[] {
+    const rev = s.revision;
+    return rev ? this.o.pipeline.stages.filter((x) => rev.stages.includes(x.id)) : this.o.pipeline.stages;
+  }
+
+  /** For "update" follow-ups: merge the default branch in, then decide which stages need to run. */
+  private async mergeDefaultIfNeeded(ctx: Ctx): Promise<void> {
+    const rev = ctx.state.revision;
+    if (!rev || rev.kind !== "update" || rev.mergeDone) return;
+    const t = ctx.ticket;
+    this.log(t.id, "info", `Merging the latest ${t.defaultBranch} into ${t.branch}`);
+    const r = await this.git.mergeDefault(t.worktree!, t.defaultBranch!);
+    rev.mergeDone = true;
+    // diffs and reviews now compare against the new default branch, so they show only this ticket's changes
+    ctx.update({ baseSha: r.target });
+    const all = this.revisionStages();
+    if (r.conflicts.length) {
+      rev.conflicts = r.conflicts;
+      rev.stages = all.filter((id) => ["dev", "qa", "security"].includes(this.kindOf(id) ?? ""));
+      const dev = rev.stages[0]!;
+      ctx.state.pending[dev] = [
+        {
+          from: "follow-up request",
+          to: dev,
+          round: rev.n,
+          kind: "sendBack",
+          text:
+            `Merging the latest \`${t.defaultBranch}\` into this branch caused merge conflicts in: ${r.conflicts.map((f) => `\`${f}\``).join(", ")}.\n` +
+            `Resolve every conflict: remove all \`<<<<<<<\`, \`=======\` and \`>>>>>>>\` markers and keep both this ticket's changes and the new changes from \`${t.defaultBranch}\`. Then run the tests. Do not commit; the orchestrator completes the merge.`,
+        },
+      ];
+      this.log(t.id, "warn", `Merge conflicts in ${r.conflicts.join(", ")}: handing to Dev`);
+    } else {
+      rev.stages = all.filter((id) => this.kindOf(id) === "qa");
+      this.log(t.id, "info", `Merged ${t.defaultBranch} cleanly`);
+    }
+    this.o.store.saveState(t.id, ctx.state);
+  }
+
   /** Skips the remaining wait of a ticket paused by the usage limit. */
   resumeNow(id: string): void {
     this.wakers.get(id)?.();
@@ -253,6 +371,7 @@ export class Team {
         .catch((e) => console.error("ticket crashed", id, e))
         .finally(() => {
           this.controllers.delete(id);
+          this.notifyIfFinal(this.o.store.getTicket(id));
           this.pump();
         });
     }
@@ -261,11 +380,15 @@ export class Team {
   private saveAndEmit(t: Ticket): void {
     this.o.store.saveTicket(t);
     this.bus.emit({ type: "ticket", ticket: t });
-    if (FINAL_STATUSES.includes(t.status)) {
-      const list = this.waiters.get(t.id) ?? [];
-      this.waiters.delete(t.id);
-      for (const fn of list) fn(t);
-    }
+    // while its run is still wrapping up, waiters are notified when the run ends (see pump)
+    if (!this.controllers.has(t.id)) this.notifyIfFinal(t);
+  }
+
+  private notifyIfFinal(t: Ticket | undefined): void {
+    if (!t || !FINAL_STATUSES.includes(t.status)) return;
+    const list = this.waiters.get(t.id) ?? [];
+    this.waiters.delete(t.id);
+    for (const fn of list) fn(t);
   }
 
   private log(ticketId: string | undefined, kind: LogKind, text: string): void {
@@ -289,6 +412,7 @@ export class Team {
 
   private label(stageId: string): string {
     if (stageId === "verify") return "Test gate";
+    if (stageId === "merge") return "Merge check";
     if (stageId === "publish") return "PR";
     const st = this.o.pipeline.stages.find((s) => s.id === stageId);
     const role = this.o.roles.find((r) => r.id === (st?.role ?? stageId));
@@ -329,11 +453,14 @@ export class Team {
     };
     try {
       ctx.update({ status: "running", resumeAt: undefined, error: undefined });
+      if (ctx.state.revision) this.setRevision(ctx, { status: "running", endedAt: undefined });
       await this.prepareWorkspace(ctx);
+      await this.mergeDefaultIfNeeded(ctx);
       await this.runStages(ctx);
       await this.publish(ctx);
     } catch (e) {
       const t = ctx.ticket;
+      if (ctx.state.revision) this.setRevision(ctx, { status: signal.aborted || e instanceof Cancelled ? "cancelled" : "failed", endedAt: Date.now() });
       if (signal.aborted || e instanceof Cancelled) {
         this.log(id, "warn", "Ticket cancelled.");
         ctx.update({ status: "cancelled", stage: undefined });
@@ -365,6 +492,12 @@ export class Team {
     }
   }
 
+  private setRevision(ctx: Ctx, patch: Partial<RevisionInfo>): void {
+    const n = ctx.state.revision?.n;
+    if (!n) return;
+    ctx.update({ revisions: (ctx.ticket.revisions ?? []).map((r) => (r.n === n ? { ...r, ...patch } : r)) });
+  }
+
   private initialState(): RunState {
     const limits: Record<string, number> = {};
     for (const s of this.o.pipeline.stages) if (s.maxSendBacks !== undefined) limits[s.id] = s.maxSendBacks;
@@ -376,6 +509,14 @@ export class Team {
     if (t.worktree && fs.existsSync(t.worktree)) return;
     const info = await this.git.inspectRepo(t.repoPath);
     if (!info.ok) throw new Error(info.error);
+    if (t.branch && t.baseSha) {
+      // the ticket already has a branch (follow-up or retry after cleanup): check it out again
+      const wtPath = await this.git.attachWorktree({ repoPath: info.root!, worktreesDir: path.join(this.o.dataDir, "worktrees"), ticketId: t.id, slug: slugify(t.title), branch: t.branch });
+      ctx.update({ worktree: wtPath });
+      this.log(t.id, "info", `Re-created the worktree for branch ${t.branch}`);
+      await this.installDeps(ctx, wtPath);
+      return;
+    }
     const wt = await this.git.createWorktree({
       repoPath: info.root!,
       worktreesDir: path.join(this.o.dataDir, "worktrees"),
@@ -385,11 +526,15 @@ export class Team {
     });
     ctx.update({ repoPath: info.root!, worktree: wt.path, branch: wt.branch, baseSha: wt.baseSha, defaultBranch: info.defaultBranch });
     this.log(t.id, "info", `Created isolated worktree on branch ${wt.branch}`);
-    const project = detectProject(wt.path);
-    if (this.settings.installDeps && project.installCommand && !fs.existsSync(path.join(wt.path, "node_modules"))) {
-      this.log(t.id, "info", `Installing existing dependencies: ${project.installCommand}`);
-      const r = await exec(project.installCommand, [], { cwd: wt.path, shell: true, timeoutMs: 15 * 60_000, signal: ctx.signal });
-      if (r.code !== 0) this.log(t.id, "warn", `Dependency install failed (continuing): ${tail(r.stderr || r.stdout, 500)}`);
+    await this.installDeps(ctx, wt.path);
+  }
+
+  private async installDeps(ctx: Ctx, wtPath: string): Promise<void> {
+    const project = detectProject(wtPath);
+    if (this.settings.installDeps && project.installCommand && !fs.existsSync(path.join(wtPath, "node_modules"))) {
+      this.log(ctx.ticket.id, "info", `Installing existing dependencies: ${project.installCommand}`);
+      const r = await exec(project.installCommand, [], { cwd: wtPath, shell: true, timeoutMs: 15 * 60_000, signal: ctx.signal });
+      if (r.code !== 0) this.log(ctx.ticket.id, "warn", `Dependency install failed (continuing): ${tail(r.stderr || r.stdout, 500)}`);
     }
   }
 
@@ -399,16 +544,16 @@ export class Team {
   }
 
   private async runStages(ctx: Ctx): Promise<void> {
-    const stages = this.o.pipeline.stages;
     const s = ctx.state;
     for (;;) {
       this.checkLimits(ctx);
+      const stages = this.activeStages(s);
       if (s.index >= stages.length) {
         ctx.update({ stage: "verify" });
         s.verify = await this.verify(ctx);
         if ("passed" in s.verify && !s.verify.passed) {
           const counter = this.o.pipeline.verifyCountsAs;
-          const to = stages.find((x) => x.id === counter)?.sendBackTo ?? "dev";
+          const to = this.o.pipeline.stages.find((x) => x.id === counter)?.sendBackTo ?? "dev";
           this.sendBack(ctx, counter, "verify", to, `The automated test gate ran \`${s.verify.command}\` and it failed:\n\n\`\`\`\n${s.verify.output}\n\`\`\``);
           this.o.store.saveState(ctx.ticket.id, s);
           continue;
@@ -418,6 +563,14 @@ export class Team {
       const stage = stages[s.index]!;
       const role = this.o.roles.find((r) => r.id === stage.role)!;
       const output = await this.runStage(ctx, stage, role);
+      if (role.kind === "dev" && s.revision?.conflicts.length && (await this.git.isMerging(ctx.ticket.worktree!))) {
+        const left = this.git.filesWithMarkers(ctx.ticket.worktree!, s.revision.conflicts);
+        if (left.length) {
+          this.sendBack(ctx, this.o.pipeline.verifyCountsAs, "merge", stage.id, `Merge conflict markers are still present in: ${left.map((f) => `\`${f}\``).join(", ")}. Resolve every conflict and remove all markers.`);
+          this.o.store.saveState(ctx.ticket.id, s);
+          continue;
+        }
+      }
       if (stage.commitAfter) {
         const summary = String((output as { summary?: string }).summary ?? "").split(/\r?\n/)[0]!.slice(0, 60);
         const sha = await this.git.commitAll(ctx.ticket.worktree!, `${role.title}: ${summary || stage.id}`);
@@ -440,7 +593,9 @@ export class Team {
     const s = ctx.state;
     const count = s.sendBacks[counter] ?? 0;
     const limit = s.limits[counter] ?? 0;
-    const indexOf = (id: string) => this.o.pipeline.stages.findIndex((x) => x.id === id);
+    // a revision that skipped a stage (e.g. Dev after a clean merge) brings it in when work is sent back to it
+    if (s.revision && count < limit && !s.revision.stages.includes(to)) s.revision.stages.push(to);
+    const indexOf = (id: string) => this.activeStages(s).findIndex((x) => x.id === id);
     if (count < limit) {
       s.sendBacks[counter] = count + 1;
       const fb: Feedback = { from, to, text, round: count + 1, kind: "sendBack" };
@@ -451,7 +606,8 @@ export class Team {
       return;
     }
     const rescue = this.o.pipeline.rescue;
-    if (rescue && rescue.from.includes(counter) && !s.rescued) {
+    // no CTO re-plan inside a follow-up: the plan is already agreed, so a stuck revision just stops
+    if (rescue && rescue.from.includes(counter) && !s.rescued && !s.revision) {
       s.rescued = true;
       for (const id of rescue.from) {
         s.sendBacks[id] = 0;
@@ -480,7 +636,7 @@ export class Team {
     const worker = this.workers.get(role.id)!;
     const round = (s.rounds[stage.id] ?? 0) + 1;
     const rescue = stage.id === this.o.pipeline.rescue?.to && s.rescueNext;
-    const task = `${taskVerb(role.kind, stage.mode)}${round > 1 ? ` · round ${round}` : ""}${rescue ? " · rescue" : ""}`;
+    const task = `${s.revision ? `Revision ${s.revision.n} · ` : ""}${taskVerb(role.kind, stage.mode)}${round > 1 && !s.revision ? ` · round ${round}` : ""}${rescue ? " · rescue" : ""}`;
     const t0 = ctx.ticket;
 
     return worker.submit({ ticketId: t0.id, task }, async () => {
@@ -530,6 +686,7 @@ export class Team {
         stageId: stage.id,
         roleId: role.id,
         round,
+        revision: s.revision?.n,
         status: "running",
         startedAt: Date.now(),
         prompt,
@@ -663,6 +820,19 @@ export class Team {
     const files = await this.git.changedFiles(t.worktree!, t.baseSha!);
     if (!files.length) throw new TicketFailure("The developer made no changes, so there is nothing to open a PR for.");
     ctx.update({ stage: "publish" });
+    const rev = ctx.state.revision;
+    if (rev) {
+      const devId = this.revisionStages()[0]!;
+      const devRan = rev.stages.includes(devId);
+      const devSummary = String((ctx.state.outputs[devId] as { summary?: string } | undefined)?.summary ?? "");
+      const summary =
+        rev.kind === "update"
+          ? rev.conflicts.length
+            ? `Merged the latest \`${t.defaultBranch}\` and resolved conflicts in ${rev.conflicts.map((f) => `\`${f}\``).join(", ")}. ${devRan ? devSummary : ""}`.trim()
+            : `Merged the latest \`${t.defaultBranch}\`; no conflicts.${devRan ? ` ${devSummary}` : ""}`
+          : devSummary || "Done.";
+      this.setRevision(ctx, { status: "done", endedAt: Date.now(), summary });
+    }
     const diffStat = await this.git.diffStat(t.worktree!, t.baseSha!);
     const body = buildPrBody({
       ticket: ctx.ticket,
@@ -673,19 +843,18 @@ export class Team {
       diffStat,
       verify: ctx.state.verify,
     });
-    const title = buildPrTitle(t);
+    const req = { ticketId: t.id, repoPath: t.repoPath, worktree: t.worktree!, branch: t.branch!, defaultBranch: t.defaultBranch!, title: buildPrTitle(t), body };
     this.handoff(t.id, "verify", "publish", "publish");
-    const res = await this.o.publisher.publish({
-      ticketId: t.id,
-      repoPath: t.repoPath,
-      worktree: t.worktree!,
-      branch: t.branch!,
-      defaultBranch: t.defaultBranch!,
-      title,
-      body,
-    });
-    this.log(t.id, "info", res.dryRun ? "Dry run: PR text prepared, nothing pushed." : `Opened PR ${res.url}`);
-    ctx.update({ status: res.dryRun ? "pr_ready" : "pr_opened", prUrl: res.url, prBody: body, stage: undefined });
+    let res;
+    if (rev && this.o.publisher.update) {
+      res = await this.o.publisher.update({ ...req, prUrl: t.prUrl });
+      this.log(t.id, "info", res.dryRun ? `Dry run: revision ${rev.n} prepared, nothing pushed.` : `Pushed revision ${rev.n} to ${t.branch} and updated ${res.url}`);
+    } else {
+      res = await this.o.publisher.publish(req);
+      this.log(t.id, "info", res.dryRun ? "Dry run: PR text prepared, nothing pushed." : `Opened PR ${res.url}`);
+    }
+    ctx.state.revision = undefined;
+    ctx.update({ status: res.dryRun ? "pr_ready" : "pr_opened", prUrl: res.url ?? t.prUrl, prBody: body, stage: undefined, lastPublishedAt: Date.now() });
   }
 }
 

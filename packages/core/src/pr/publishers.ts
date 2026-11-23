@@ -22,6 +22,8 @@ export interface PublishResult {
 export interface PrPublisher {
   readonly dryRun: boolean;
   publish(req: PublishRequest): Promise<PublishResult>;
+  /** Pushes new commits to the same branch and refreshes the PR description (opens the PR if there is none yet). */
+  update?(req: PublishRequest & { prUrl?: string }): Promise<PublishResult>;
 }
 
 /** Writes the PR text to disk instead of pushing. Used in tests and when "dry run" is on. */
@@ -39,6 +41,15 @@ export class DryRunPublisher implements PrPublisher {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "pr.md"), `# ${req.title}\n\n${req.body}`);
     return { dryRun: true };
+  }
+
+  readonly updated: PublishRequest[] = [];
+  async update(req: PublishRequest & { prUrl?: string }): Promise<PublishResult> {
+    this.updated.push(req);
+    const dir = path.join(this.dataDir, "tickets", req.ticketId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "pr.md"), `# ${req.title}\n\n${req.body}`);
+    return { url: req.prUrl, dryRun: true };
   }
 }
 
@@ -62,6 +73,20 @@ export class GhCliPublisher implements PrPublisher {
       if (r.code !== 0) throw new Error(`gh pr create failed: ${(r.stderr || r.stdout).trim()}`);
       const url = /https:\/\/github\.com\/\S+\/pull\/\d+/.exec(r.stdout)?.[0] ?? r.stdout.trim();
       return { url, dryRun: false };
+    } finally {
+      fs.rmSync(bodyFile, { force: true });
+    }
+  }
+
+  async update(req: PublishRequest & { prUrl?: string }): Promise<PublishResult> {
+    if (!req.prUrl) return this.publish(req);
+    await this.git.pushBranch({ worktree: req.worktree, branch: req.branch, defaultBranch: req.defaultBranch });
+    const bodyFile = path.join(os.tmpdir(), `rb-pr-${req.ticketId}.md`);
+    fs.writeFileSync(bodyFile, req.body);
+    try {
+      const r = await exec("gh", ["pr", "edit", req.prUrl, "--body-file", bodyFile], { cwd: req.worktree, timeoutMs: 120_000 });
+      if (r.code !== 0) throw new Error(`gh pr edit failed: ${(r.stderr || r.stdout).trim()}`);
+      return { url: req.prUrl, dryRun: false };
     } finally {
       fs.rmSync(bodyFile, { force: true });
     }
