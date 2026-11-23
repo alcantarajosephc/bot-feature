@@ -35,6 +35,26 @@ node --env-file=.env.demo apps/server/src/main.ts   # scripted demo team + sampl
 - Node 24+, git, GitHub CLI (`gh auth login`)
 - Claude Code CLI signed in with your subscription (`claude`, then log in). Run `claude update` if Settings says your version does not support the configured model.
 
+#### Using Node 24 without changing your default (Windows, nvm-windows)
+
+The server runs `.ts` files directly, so older Node fails with `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".ts"`. On nvm-windows, `nvm use` switches Node for the whole machine, not just one terminal. To keep your default version and use Node 24 only here, install it once (`nvm install 24`), then put it first on the PATH of the current PowerShell window:
+
+```powershell
+$env:Path = "$env:LOCALAPPDATA\nvm\v24.16.0;$env:Path"   # adjust to your installed 24.x folder
+node -v                                                  # v24.x
+npm start
+```
+
+This lasts only until the window is closed. Other terminals and apps keep your nvm default.
+
+To make it a one-word command, add this to your PowerShell profile (`notepad $PROFILE`):
+
+```powershell
+function Use-Node24 { $env:Path = "$env:LOCALAPPDATA\nvm\v24.16.0;$env:Path"; node -v }
+```
+
+Then run `Use-Node24` before `npm start` in any new window.
+
 ## Ideas: research mode
 
 The **Ideas** page runs a research loop. Nothing gets built until you approve an idea.
