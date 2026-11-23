@@ -53,6 +53,31 @@ export function dateTime(ts: number): string {
   return new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+const STAGE_LABEL: Record<string, string> = {
+  setup: "Setting up workspace (installing dependencies)",
+  ceo: "CEO is weighing it",
+  pm: "PM is writing stories",
+  designer: "Designer is on it",
+  cto: "CTO is planning",
+  "security-plan": "Security is reviewing the plan",
+  dev: "Dev is implementing",
+  qa: "QA is testing",
+  "security-diff": "Security is reviewing the code",
+  docs: "Docs are being updated",
+  verify: "Running the test gate",
+  publish: "Opening the PR",
+};
+
+/** Human wording for a ticket's current stage. */
+export function stageLabel(stage: string | undefined): string {
+  return stage ? (STAGE_LABEL[stage] ?? stage) : "Starting…";
+}
+
+/** Colour for where a ticket came from (used in the backlog and on the office board). */
+export function sourceColor(source: string): string {
+  return source === "github" ? "#93c5fd" : source === "jira" ? "#fcd34d" : source === "idea" ? "#86efac" : "#f9a8d4";
+}
+
 export function isActive(t: Ticket | undefined): boolean {
   return !!t && ["queued", "running", "paused"].includes(t.status);
 }

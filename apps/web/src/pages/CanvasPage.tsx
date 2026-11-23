@@ -7,7 +7,7 @@ import { Avatar, Markdown, TicketActions, TicketBadge, TicketPicker, WorkerBadge
 import { Modal } from "../components/Modal.tsx";
 import { StatusRows } from "../components/StatusRows.tsx";
 import { TeamLog } from "../components/TeamLog.tsx";
-import { isActive, time, tokens } from "../format.ts";
+import { isActive, stageLabel, time, tokens } from "../format.ts";
 import { actions, latestLog, useApp } from "../store.ts";
 import type { StageSpec } from "../types.ts";
 
@@ -213,7 +213,7 @@ function PrNode() {
             </button>
           )}
           {t.status === "paused" && <p className="small">Usage limit reached. Resumes {t.resumeAt ? `at ${time(t.resumeAt)}` : "soon"}.</p>}
-          {isActive(t) && t.stage && <p className="small muted">At stage: {t.stage}</p>}
+          {isActive(t) && <p className="small muted">{t.status === "queued" ? "Waiting in the backlog" : stageLabel(t.stage)}</p>}
           {t.error && <p className="error-text small">{t.error}</p>}
           {t.branch && (
             <p className="small muted">

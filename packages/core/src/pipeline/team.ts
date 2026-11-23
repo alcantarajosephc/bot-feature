@@ -507,6 +507,8 @@ export class Team {
   private async prepareWorkspace(ctx: Ctx): Promise<void> {
     const t = ctx.ticket;
     if (t.worktree && fs.existsSync(t.worktree)) return;
+    // creating the worktree and installing dependencies can take minutes: show it, so it doesn't look stuck
+    ctx.update({ stage: "setup" });
     const info = await this.git.inspectRepo(t.repoPath);
     if (!info.ok) throw new Error(info.error);
     if (t.branch && t.baseSha) {

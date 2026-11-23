@@ -718,6 +718,104 @@ blockquote.desc {
   min-height: 300px;
   display: block;
 }
+.office-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+/* the canvas sizes its drawing buffer from its CSS box, so the box must fill the grid cell */
+.office-body .office-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.backlog {
+  border-right: 1px solid var(--line);
+  background: #0d1330;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+.backlog h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.backlog h4 {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.backlog .count {
+  background: #92400e;
+  color: #fde68a;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+.backlog-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: var(--panel);
+}
+.backlog-item.now {
+  flex-direction: column;
+  gap: 3px;
+  box-shadow: 0 0 12px -4px #3b82f6;
+}
+.backlog-item.selected {
+  outline: 1px solid #60a5fa;
+}
+.backlog-item.attention {
+  border-left-color: var(--bad);
+}
+.backlog-item .title {
+  font-weight: 600;
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+.backlog-item .meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.backlog-item .pos {
+  font-weight: 700;
+  color: #fcd34d;
+  font-size: 12px;
+  min-width: 22px;
+}
+.backlog-item .grow {
+  min-width: 0;
+}
+.backlog-item .ellipsis {
+  max-width: 190px;
+}
+@media (max-width: 1100px) {
+  .office-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(360px, 1fr);
+  }
+  .backlog {
+    max-height: 240px;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+}
 .office-legend {
   display: flex;
   flex-wrap: wrap;

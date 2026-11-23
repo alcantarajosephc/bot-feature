@@ -66,6 +66,18 @@ describe("pipeline: happy path", () => {
     expect(byStage.dev!.model).toBe("claude-opus-5-5");
   });
 
+  it("shows a 'setup' stage while the worktree is created and dependencies install", async () => {
+    env = await createTestTeam();
+    const stages: (string | undefined)[] = [];
+    env.bus.subscribe((e: BusEvent) => {
+      if (e.type === "ticket") stages.push(e.ticket.stage);
+    });
+    const t = env.team.submit(SAMPLE_TICKET, env.repo.path);
+    await env.team.waitForFinal(t.id);
+    const firstStage = stages.find((s) => s);
+    expect(firstStage).toBe("setup");
+  });
+
   it("passes earlier decisions to later roles", async () => {
     env = await createTestTeam();
     const t = env.team.submit(SAMPLE_TICKET, env.repo.path);

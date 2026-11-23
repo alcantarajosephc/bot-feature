@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import { Backlog, queuedInOrder } from "../components/Backlog.tsx";
 import { TicketActions, TicketPicker } from "../components/common.tsx";
+import { sourceColor } from "../format.ts";
 import { TeamLog } from "../components/TeamLog.tsx";
 import { OfficeScene, type RoleView } from "../office/officeScene.ts";
 import { actions, latestLog, useApp } from "../store.ts";
@@ -19,6 +21,7 @@ export function OfficePage() {
   const selectedRole = useApp((s) => s.selectedRoleId);
   const ticketId = useApp((s) => s.selectedTicketId);
   const ticket = useApp((s) => (ticketId ? s.tickets[ticketId] : undefined));
+  const tickets = useApp((s) => s.tickets);
 
   useEffect(() => {
     if (!canvas.current) return;
@@ -48,6 +51,11 @@ export function OfficePage() {
     scene.current?.setViews(views, selectedRole, ticket?.title ?? "");
   }, [roles, workers, logs, selectedRole, ticket?.title]);
 
+  // queued tickets become sticky notes on the backlog board
+  useEffect(() => {
+    scene.current?.setBacklog(queuedInOrder(tickets).map((t) => ({ title: t.title, color: sourceColor(t.source) })));
+  }, [tickets]);
+
   return (
     <div className="office-page">
       <div className="office-main">
@@ -58,7 +66,10 @@ export function OfficePage() {
           <span className="grow" />
           <span className="small muted hint">Busy roles stay at their desks; idle ones wander. Click a character.</span>
         </div>
-        <canvas ref={canvas} className="office-canvas" data-testid="office-canvas" aria-label="Office view: click a character to open its panel" />
+        <div className="office-body">
+          <Backlog />
+          <canvas ref={canvas} className="office-canvas" data-testid="office-canvas" aria-label="Office view: click a character to open its panel" />
+        </div>
         <div className="office-legend small">
           {roles.map((r) => (
             <button key={r.id} className="legend-chip" style={{ borderColor: r.color }} onClick={() => actions.selectRole(r.id)} data-testid={`office-chip-${r.id}`}>
