@@ -74,7 +74,7 @@ function TicketInputNode() {
           Write
         </button>
         <button type="button" role="tab" aria-selected={mode === "issue"} onClick={() => { setMode("issue"); setError(undefined); }}>
-          GitHub issue
+          Issue
         </button>
       </div>
       {mode === "write" ? (
@@ -91,7 +91,7 @@ function TicketInputNode() {
       ) : (
         <>
           <label>
-            Issue link or number
+            GitHub issue or Jira key / link
             <div className="row">
               <input
                 value={issueRef}
@@ -115,8 +115,8 @@ function TicketInputNode() {
                     void loadIssue();
                   }
                 }}
-                placeholder="https://github.com/owner/repo/issues/12 or #12"
-                aria-label="GitHub issue"
+                placeholder="#12, owner/repo#12, PROJ-123 or a link"
+                aria-label="Issue reference"
               />
               <button type="button" id="load-issue" onClick={loadIssue} disabled={busy || !issueRef.trim()}>
                 Load

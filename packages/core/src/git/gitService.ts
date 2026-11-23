@@ -7,10 +7,23 @@ export interface RepoInfo {
   error?: string;
   root?: string;
   remoteUrl?: string;
+  /** Where the 'origin' remote is hosted; decides how PRs are opened. */
+  host?: GitHost;
+  /** "owner/name" (GitHub) or "workspace/repo-slug" (Bitbucket). */
+  repo?: string;
   isGitHub: boolean;
   /** "owner/name" when the remote is on GitHub. */
   githubRepo?: string;
   defaultBranch?: string;
+}
+
+export type GitHost = "github" | "bitbucket" | "other";
+
+/** Reads the host and "owner/name" from a remote URL (https, ssh or scp-style). */
+export function parseRemote(remoteUrl: string): { host: GitHost; repo?: string } {
+  const m = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(github\.com|bitbucket\.org)[:/]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(remoteUrl.trim());
+  if (!m) return { host: "other" };
+  return { host: m[1]!.toLowerCase() === "github.com" ? "github" : "bitbucket", repo: m[2] };
 }
 
 export interface Worktree {
@@ -56,7 +69,7 @@ export class GitService {
     if (!root) return { ok: false, isGitHub: false, error: `Not a git repository: ${repoPath}` };
     const remoteUrl = await this.tryGit(repoPath, ["remote", "get-url", "origin"]);
     if (!remoteUrl) return { ok: false, isGitHub: false, root, error: "The git repository has no 'origin' remote." };
-    const gh = /github\.com[:/]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(remoteUrl);
+    const remote = parseRemote(remoteUrl);
     let defaultBranch = (await this.tryGit(repoPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]))?.replace(/^origin\//, "");
     if (!defaultBranch) {
       for (const b of ["main", "master"]) {
@@ -67,7 +80,8 @@ export class GitService {
       }
     }
     defaultBranch ??= (await this.tryGit(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"])) ?? "main";
-    return { ok: true, root: path.resolve(root), remoteUrl, isGitHub: !!gh, githubRepo: gh?.[1], defaultBranch };
+    const isGitHub = remote.host === "github";
+    return { ok: true, root: path.resolve(root), remoteUrl, host: remote.host, repo: remote.repo, isGitHub, githubRepo: isGitHub ? remote.repo : undefined, defaultBranch };
   }
 
   async createWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; defaultBranch: string }): Promise<Worktree> {

@@ -39,9 +39,21 @@ export interface IssuePreview {
 
 export interface Checks {
   claude: { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; subscriptionType?: string; error?: string };
-  repo: { ok: boolean; error?: string; root?: string; remoteUrl?: string; isGitHub: boolean; githubRepo?: string; defaultBranch?: string };
+  repo: { ok: boolean; error?: string; root?: string; remoteUrl?: string; host?: "github" | "bitbucket" | "other"; repo?: string; isGitHub: boolean; githubRepo?: string; defaultBranch?: string };
   gh: { installed: boolean; loggedIn: boolean };
+  bitbucket: ServiceCheck;
+  jira: ServiceCheck;
 }
+
+export interface ServiceCheck {
+  configured: boolean;
+  ok: boolean;
+  user?: string;
+  error?: string;
+}
+
+export type SecretKey = "anthropicApiKey" | "bitbucketToken" | "jiraToken";
+export type SecretStatus = Partial<Record<SecretKey, { set: boolean; fromEnv?: boolean }>>;
 
 export const api = {
   state: () => req<StateResponse>("GET", "/api/state"),
@@ -53,9 +65,9 @@ export const api = {
   retry: (id: string) => req("POST", `/api/tickets/${id}/retry`),
   followUp: (id: string, kind: "change" | "review" | "update", text: string) => req<Ticket>("POST", `/api/tickets/${id}/follow-up`, { kind, text }),
   resumeNow: (id: string) => req("POST", `/api/tickets/${id}/resume-now`),
-  settings: () => req<{ settings: AppSettings; secrets: Record<string, { set: boolean }> }>("GET", "/api/settings"),
-  saveSettings: (patch: Partial<AppSettings>) => req<{ settings: AppSettings; secrets: Record<string, { set: boolean }> }>("PUT", "/api/settings", patch),
-  saveSecret: (anthropicApiKey: string | null) => req<{ secrets: Record<string, { set: boolean }> }>("PUT", "/api/secrets", { anthropicApiKey }),
+  settings: () => req<{ settings: AppSettings; secrets: SecretStatus }>("GET", "/api/settings"),
+  saveSettings: (patch: Partial<AppSettings>) => req<{ settings: AppSettings; secrets: SecretStatus }>("PUT", "/api/settings", patch),
+  saveSecret: (key: SecretKey, value: string | null) => req<{ secrets: SecretStatus }>("PUT", "/api/secrets", { [key]: value }),
   checks: () => req<Checks>("GET", "/api/checks"),
   labStart: () => req<LabStatus>("POST", "/api/lab/start"),
   labStop: () => req<LabStatus>("POST", "/api/lab/stop"),

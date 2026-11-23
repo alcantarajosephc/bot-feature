@@ -43,16 +43,16 @@ test("a ticket flows through every role to a dry-run PR, with a live team log", 
 test("a ticket can come from a GitHub issue link, and the PR closes the issue", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("conn")).toHaveText(/live/);
-  await page.getByRole("tab", { name: "GitHub issue" }).click();
+  await page.getByRole("tab", { name: "Issue", exact: true }).click();
 
   // a bad reference explains itself
-  await page.getByLabel("GitHub issue").fill("acme/widgets#404");
+  await page.getByLabel("Issue reference").fill("acme/widgets#404");
   await page.getByRole("button", { name: "Load" }).click();
   await expect(page.getByTestId("ticket-form")).toContainText("Could not load acme/widgets#404");
   await expect(page.getByRole("button", { name: "Send to the team" })).toBeDisabled();
 
-  await page.getByLabel("GitHub issue").fill("https://github.com/acme/widgets/issues/5");
-  await page.getByLabel("GitHub issue").press("Enter");
+  await page.getByLabel("Issue reference").fill("https://github.com/acme/widgets/issues/5");
+  await page.getByLabel("Issue reference").press("Enter");
   const preview = page.getByTestId("issue-preview");
   await expect(preview).toContainText("acme/widgets#5");
   await expect(preview).toContainText("Add a greet function");

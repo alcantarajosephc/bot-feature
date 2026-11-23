@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Checks } from "../api.ts";
+import { api, type Checks, type SecretKey, type SecretStatus, type ServiceCheck } from "../api.ts";
 import { actions, useApp } from "../store.ts";
 import type { AppSettings } from "../types.ts";
 
@@ -11,10 +11,38 @@ function Check({ ok, children }: { ok: boolean | undefined; children: React.Reac
   );
 }
 
+function ServiceLine({ name, check, hint }: { name: string; check: ServiceCheck; hint: string }) {
+  if (!check.configured) return <li className="muted">– {name}: not set up ({hint})</li>;
+  return <Check ok={check.ok}>{check.ok ? `${name}: signed in${check.user ? ` as ${check.user}` : ""}` : `${name}: ${check.error}`}</Check>;
+}
+
+/** Write-only token box: the stored value never comes back to the browser. */
+function SecretField({ label, k, secrets, placeholder, onSave }: { label: string; k: SecretKey; secrets: SecretStatus; placeholder: string; onSave: (k: SecretKey, v: string | null) => void }) {
+  const [value, setValue] = useState("");
+  const st = secrets[k];
+  return (
+    <label>
+      {label}
+      <div className="row">
+        <input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder={st?.set ? (st.fromEnv ? "set by environment variable" : "•••••••• (stored)") : placeholder} aria-label={label} autoComplete="off" />
+        <button type="button" onClick={() => (onSave(k, value), setValue(""))} disabled={!value}>
+          Store
+        </button>
+        {st?.set && !st.fromEnv && (
+          <button type="button" onClick={() => onSave(k, null)}>
+            Remove
+          </button>
+        )}
+      </div>
+    </label>
+  );
+}
+
 export function SettingsPage() {
   const roles = useApp((s) => s.roles);
   const [s, setS] = useState<AppSettings>();
-  const [secretSet, setSecretSet] = useState(false);
+  const [secrets, setSecrets] = useState<SecretStatus>({});
+  const secretSet = !!secrets.anthropicApiKey?.set;
   const [apiKey, setApiKey] = useState("");
   const [checks, setChecks] = useState<Checks>();
   const [checking, setChecking] = useState(false);
@@ -32,7 +60,7 @@ export function SettingsPage() {
   useEffect(() => {
     api.settings().then((r) => {
       setS(r.settings);
-      setSecretSet(!!r.secrets.anthropicApiKey?.set);
+      setSecrets(r.secrets);
     });
     void runChecks();
   }, []);
@@ -52,12 +80,22 @@ export function SettingsPage() {
     }
   };
 
-  const saveKey = async (value: string | null) => {
-    const r = await api.saveSecret(value);
-    setSecretSet(!!r.secrets.anthropicApiKey?.set);
-    setApiKey("");
-    setMsg({ ok: true, text: value ? "API key stored locally." : "API key removed." });
+  const saveSecret = async (key: SecretKey, value: string | null) => {
+    try {
+      const r = await api.saveSecret(key, value);
+      setSecrets(r.secrets);
+      setMsg({ ok: true, text: value ? "Stored locally." : "Removed." });
+      if (key !== "anthropicApiKey") void runChecks();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    }
   };
+  const saveKey = async (value: string | null) => {
+    await saveSecret("anthropicApiKey", value);
+    setApiKey("");
+  };
+
+  const host = checks?.repo.host;
 
   return (
     <div className="page settings" data-testid="settings-page">
@@ -66,15 +104,59 @@ export function SettingsPage() {
       <section className="card">
         <h2>Target project</h2>
         <label>
-          Local folder (a git repo with a GitHub remote)
+          Local folder (a git repo with a GitHub or Bitbucket remote)
           <input value={s.targetRepo} onChange={(e) => up({ targetRepo: e.target.value })} placeholder="D:\code\my-app" aria-label="Target project folder" />
         </label>
         {checks && (
           <ul className="checks" data-testid="repo-checks">
             <Check ok={checks.repo.ok}>{checks.repo.ok ? `Git repository found (default branch ${checks.repo.defaultBranch})` : checks.repo.error}</Check>
-            {checks.repo.ok && <Check ok={checks.repo.isGitHub}>{checks.repo.isGitHub ? `GitHub remote: ${checks.repo.githubRepo}` : "Remote is not on GitHub: PRs can only be prepared (dry run)."}</Check>}
+            {checks.repo.ok && (
+              <Check ok={host === "github" || host === "bitbucket"}>
+                {host === "github"
+                  ? `GitHub remote: ${checks.repo.repo}. PRs open with the GitHub CLI.`
+                  : host === "bitbucket"
+                    ? `Bitbucket remote: ${checks.repo.repo}. PRs open through the Bitbucket API.`
+                    : "Remote is not on GitHub or bitbucket.org: PRs can only be prepared (dry run)."}
+              </Check>
+            )}
           </ul>
         )}
+      </section>
+
+      <section className="card" data-testid="atlassian-settings">
+        <h2>Bitbucket & Jira</h2>
+        <p className="small muted">
+          For Bitbucket Cloud remotes and Jira tickets. Uses your Atlassian account email with API tokens (create them under your Atlassian account's security settings). The Bitbucket token needs read and write access to
+          pull requests and read access to repositories and your account. Tokens stay in a local file, are only sent to bitbucket.org and your Jira site, and are hidden from the agents. You can also set <code>ATLASSIAN_EMAIL</code>,{" "}
+          <code>BITBUCKET_API_TOKEN</code> and <code>JIRA_API_TOKEN</code>.
+        </p>
+        <div className="grid-2">
+          <label>
+            Atlassian account email
+            <input value={s.atlassianEmail} onChange={(e) => up({ atlassianEmail: e.target.value })} placeholder="you@company.com" aria-label="Atlassian email" autoComplete="off" />
+          </label>
+          <label>
+            Jira site
+            <input value={s.jiraSite} onChange={(e) => up({ jiraSite: e.target.value })} placeholder="your-company.atlassian.net" aria-label="Jira site" />
+          </label>
+          <label>
+            Jira project for ideas parked as issues
+            <input value={s.jiraProjectKey} onChange={(e) => up({ jiraProjectKey: e.target.value })} placeholder="PROJ" aria-label="Jira project key" />
+          </label>
+          <label>
+            Jira issue type for those ideas
+            <input value={s.jiraIssueType} onChange={(e) => up({ jiraIssueType: e.target.value })} placeholder="Task" aria-label="Jira issue type" />
+          </label>
+          <SecretField label="Bitbucket API token" k="bitbucketToken" secrets={secrets} placeholder="Bitbucket API token" onSave={saveSecret} />
+          <SecretField label="Jira API token" k="jiraToken" secrets={secrets} placeholder="Jira API token" onSave={saveSecret} />
+        </div>
+        {checks?.bitbucket && checks.jira && (
+          <ul className="checks" data-testid="atlassian-checks">
+            <ServiceLine name="Bitbucket" check={checks.bitbucket} hint={host === "bitbucket" ? "needed to open PRs for this project" : "only needed for Bitbucket projects"} />
+            <ServiceLine name="Jira" check={checks.jira} hint="site, email and Jira token" />
+          </ul>
+        )}
+        <p className="small muted">Save settings after changing the email or site, then the checks run again.</p>
       </section>
 
       <section className="card">
@@ -95,7 +177,7 @@ export function SettingsPage() {
                 ? `Signed in via ${checks.claude.authMethod}${checks.claude.subscriptionType ? ` (${checks.claude.subscriptionType} plan)` : ""}`
                 : "Not signed in: run `claude` in a terminal and log in."}
             </Check>
-            <Check ok={checks.gh.loggedIn}>{checks.gh.installed ? (checks.gh.loggedIn ? "GitHub CLI signed in" : "GitHub CLI not signed in: run `gh auth login`.") : "GitHub CLI (gh) not found."}</Check>
+            <Check ok={checks.gh.loggedIn || host === "bitbucket"}>{host === "bitbucket" && !checks.gh.loggedIn ? "GitHub CLI not needed for this Bitbucket project" : checks.gh.installed ? (checks.gh.loggedIn ? "GitHub CLI signed in" : "GitHub CLI not signed in: run `gh auth login`.") : "GitHub CLI (gh) not found."}</Check>
           </ul>
         )}
         <button onClick={runChecks} disabled={checking}>

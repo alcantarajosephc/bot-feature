@@ -19,6 +19,10 @@ export interface PublicRole {
 
 export interface AppSettings {
   targetRepo: string;
+  atlassianEmail: string;
+  jiraSite: string;
+  jiraProjectKey: string;
+  jiraIssueType: string;
   dryRun: boolean;
   provider: "claude-cli" | "demo";
   ticketConcurrency: number;

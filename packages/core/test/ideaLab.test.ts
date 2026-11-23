@@ -8,6 +8,7 @@ import { IdeaLab, type LabSettings } from "../src/ideas/ideaLab.ts";
 import type { LabStatus } from "../src/types.ts";
 import type { GhRunner } from "../src/tickets/github.ts";
 import { evaluateToolUse } from "../src/guardrails/guard.ts";
+import { JiraClient } from "../src/tickets/jira.ts";
 
 let env: TestTeam | undefined;
 let lab: IdeaLab | undefined;
@@ -52,10 +53,10 @@ function researchProvider(titlesFor: (ceoCall: number) => string[], extra: (req:
 let counter = 0;
 const unique = (n: number) => Array.from({ length: n }, () => `Idea number ${++counter}`);
 
-async function setup(provider: FakeProvider, s: Partial<LabSettings> = {}, extra: { gh?: GhRunner; openIssues?: () => Promise<string[]> } = {}) {
+async function setup(provider: FakeProvider, s: Partial<LabSettings> = {}, extra: { gh?: GhRunner; openIssues?: () => Promise<string[]>; jira?: () => JiraClient | undefined } = {}) {
   env = await createTestTeam();
   const settings: LabSettings = { targetRepo: env.repo.path, productBrief: "A tiny math library sold to schools.", maxIdeas: 10, ideasPerRound: 2, webResearch: true, maxEmptyRounds: 2, ...s };
-  lab = new IdeaLab({ team: env.team, provider, store: env.store, promptsDir: PROMPTS_DIR, dataDir: env.dataDir, settings: () => settings, gh: extra.gh, openIssues: extra.openIssues });
+  lab = new IdeaLab({ team: env.team, provider, store: env.store, promptsDir: PROMPTS_DIR, dataDir: env.dataDir, settings: () => settings, gh: extra.gh, openIssues: extra.openIssues, jira: extra.jira });
   return lab;
 }
 
@@ -193,6 +194,32 @@ describe("IdeaLab", () => {
     execFileSync("git", ["remote", "set-url", "origin", env!.repo.remote], { cwd: env!.repo.path });
     const t = l.sendToTeam(idea.id);
     expect(t).toMatchObject({ source: "github", sourceRef: "a/b#9", sourceUrl: "https://github.com/a/b/issues/9" });
+    await env!.team.waitForFinal(t.id);
+  });
+
+  it("parks ideas as Jira issues for projects that aren't on GitHub", async () => {
+    const created: unknown[] = [];
+    const jira = new JiraClient({
+      site: "acme.atlassian.net",
+      auth: { email: "dev@acme.test", token: "t" },
+      projectKey: "PROJ",
+      fetch: async (url, init) => {
+        if (url.endsWith("/rest/api/3/issue")) {
+          created.push(JSON.parse(String(init!.body)));
+          return new Response(JSON.stringify({ key: "PROJ-77" }));
+        }
+        return new Response(JSON.stringify({ issues: [] }));
+      },
+    });
+    const l = await setup(researchProvider(() => unique(1)), { maxIdeas: 1 }, { jira: () => jira });
+    l.start();
+    await l.waitUntilIdle();
+    const idea = l.listIdeas()[0]!;
+    const parked = await l.createIssue(idea.id);
+    expect(parked).toMatchObject({ status: "issue", issueRef: "PROJ-77", issueUrl: "https://acme.atlassian.net/browse/PROJ-77" });
+    expect(created[0]).toMatchObject({ fields: { project: { key: "PROJ" }, summary: idea.title } });
+    const t = l.sendToTeam(idea.id);
+    expect(t).toMatchObject({ source: "jira", sourceRef: "PROJ-77" });
     await env!.team.waitForFinal(t.id);
   });
 });

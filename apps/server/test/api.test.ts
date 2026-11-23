@@ -11,6 +11,7 @@ let rt: Runtime;
 let app: FastifyInstance;
 let dataDir: string;
 const H = { host: "localhost:4317" };
+const fetchCalls: { url: string; auth: string }[] = [];
 
 beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "rb-api-"));
@@ -28,6 +29,18 @@ beforeAll(async () => {
         stderr: "",
         stdout: JSON.stringify({ number: Number(n), title: "Add a greet function", body: "greet(name) from an issue", state: "OPEN", url: `https://github.com/a/b/issues/${n}`, labels: [], comments: [] }),
       };
+    },
+    fetch: async (url, init) => {
+      fetchCalls.push({ url, auth: String((init?.headers as Record<string, string>)?.authorization ?? "") });
+      const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status });
+      if (url.endsWith("/rest/api/3/myself")) return json({ displayName: "Test User" });
+      if (url.includes("/rest/api/3/issue/PROJ-123"))
+        return json({
+          key: "PROJ-123",
+          fields: { summary: "Greet users by name", description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "Add greet(name)." }] }] }, status: { name: "To Do", statusCategory: { key: "new" } } },
+        });
+      if (url.endsWith("/2.0/user")) return json({ display_name: "Bit User", account_id: "me" });
+      return json({ errorMessages: ["Issue does not exist"] }, 404);
     },
   });
   app = await buildApp(rt);
@@ -155,5 +168,41 @@ describe("API", () => {
     }
     expect((await app.inject({ method: "GET", url: "/api/settings", headers: H })).json().secrets.anthropicApiKey.set).toBe(true);
     expect(fs.readFileSync(path.join(dataDir, "secrets.json"), "utf8")).toContain("sk-ant-secret-value");
+  });
+
+  it("loads Jira tickets once Jira is set up, sending the token only to the configured site", async () => {
+    const before = await app.inject({ method: "GET", url: "/api/issues/preview?ref=PROJ-123", headers: H });
+    expect(before.statusCode).toBe(400);
+    expect(before.json().error).toMatch(/Jira is not set up/);
+    expect(fetchCalls).toHaveLength(0);
+
+    const bad = await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { jiraSite: "evil.example.com" } });
+    expect(bad.statusCode).toBe(400);
+    const ok = await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { jiraSite: "https://acme.atlassian.net/", atlassianEmail: "dev@acme.test", jiraProjectKey: "proj" } });
+    expect(ok.json().settings).toMatchObject({ jiraSite: "acme.atlassian.net", jiraProjectKey: "PROJ" });
+    const put = await app.inject({ method: "PUT", url: "/api/secrets", headers: H, payload: { jiraToken: "jira-secret-token", bitbucketToken: "bb-secret-token" } });
+    expect(put.body).not.toMatch(/secret-token/);
+    expect(put.json().secrets).toMatchObject({ jiraToken: { set: true }, bitbucketToken: { set: true } });
+
+    for (const ref of ["PROJ-123", "https://acme.atlassian.net/browse/PROJ-123"]) {
+      const r = await app.inject({ method: "GET", url: "/api/issues/preview?ref=" + encodeURIComponent(ref), headers: H });
+      expect(r.statusCode).toBe(200);
+      expect(r.json()).toMatchObject({ title: "Greet users by name", source: "jira", sourceRef: "PROJ-123", sourceUrl: "https://acme.atlassian.net/browse/PROJ-123" });
+      expect(r.json().description).toContain("Add greet(name).");
+    }
+    const other = await app.inject({ method: "GET", url: "/api/issues/preview?ref=" + encodeURIComponent("https://evil.atlassian.net/browse/PROJ-1"), headers: H });
+    expect(other.statusCode).toBe(400);
+    expect(fetchCalls.every((c) => c.url.startsWith("https://acme.atlassian.net/"))).toBe(true);
+    expect(fetchCalls[0]!.auth).toBe("Basic " + Buffer.from("dev@acme.test:jira-secret-token").toString("base64"));
+
+    const checks = (await app.inject({ method: "GET", url: "/api/checks", headers: H })).json();
+    expect(checks.jira).toMatchObject({ configured: true, ok: true, user: "Test User" });
+    expect(checks.bitbucket).toMatchObject({ configured: true, ok: true, user: "Bit User" });
+    expect(JSON.stringify(checks)).not.toMatch(/secret-token/);
+  });
+
+  it("rejects unknown secret names", async () => {
+    const r = await app.inject({ method: "PUT", url: "/api/secrets", headers: H, payload: { somethingElse: "x" } });
+    expect(r.statusCode).toBe(400);
   });
 });

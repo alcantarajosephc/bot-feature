@@ -184,7 +184,7 @@ function IdeaCard({ idea }: { idea: Idea }) {
           effort {idea.effort}
         </span>
         <span className="muted small">round {idea.round}</span>
-        {idea.status !== "new" && <span className="badge tone-muted">{idea.status === "issue" ? "GitHub issue" : idea.status}</span>}
+        {idea.status !== "new" && <span className="badge tone-muted">{idea.status === "issue" ? "issue" : idea.status}</span>}
       </header>
       <div className="idea-grid">
         <div>
@@ -223,8 +223,8 @@ function IdeaCard({ idea }: { idea: Idea }) {
               Send to team
             </button>
             {idea.status === "new" && (
-              <button disabled={busy} onClick={() => act(() => api.issueIdea(idea.id))}>
-                Create GitHub issue
+              <button disabled={busy} onClick={() => act(() => api.issueIdea(idea.id))} title="GitHub projects get a GitHub issue; other projects get a Jira issue in the project set in Settings">
+                Create issue
               </button>
             )}
             <button disabled={busy} onClick={() => act(() => api.dismissIdea(idea.id))}>
@@ -234,7 +234,7 @@ function IdeaCard({ idea }: { idea: Idea }) {
         )}
         {idea.issueUrl && (
           <a href={idea.issueUrl} target="_blank" rel="noreferrer">
-            {idea.issueRef ?? "GitHub issue"} ↗
+            {idea.issueRef ?? "issue"} ↗
           </a>
         )}
         {idea.ticketId && <Link to={`/history/${idea.ticketId}`}>Open ticket →</Link>}

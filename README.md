@@ -1,6 +1,6 @@
 # Role Bots
 
-A team of AI role bots that turns a ticket into a GitHub pull request for one of your local projects. Every role's decisions go into the PR description. You only step in at the end, to review the PR.
+A team of AI role bots that turns a ticket (typed, a GitHub issue, or a Jira issue) into a GitHub or Bitbucket Cloud pull request for one of your local projects. Every role's decisions go into the PR description. You only step in at the end, to review the PR.
 
 ```
 Ticket → CEO → PM → Designer → CTO → Security (plan) → Dev → QA → Security (diff) → Docs → test gate → PR
@@ -17,12 +17,33 @@ npm install
 npm start              # builds the UI and serves http://localhost:4317
 ```
 
-Open **Settings**, enter the target project folder (a git repo with a GitHub remote), check that the status checks are green, and turn **Dry run** off when you want real PRs. Then go to **Canvas** and either:
+Open **Settings**, enter the target project folder (a git repo with a GitHub or bitbucket.org remote), check that the status checks are green, and turn **Dry run** off when you want real PRs. Then go to **Canvas** and either:
 
 - **Write**: type or paste a title and description, or
-- **GitHub issue**: paste an issue link (`https://github.com/owner/repo/issues/12`), `owner/repo#12`, or just `#12` for the target project's repo, then press Enter to preview it.
+- **Issue**: paste a GitHub issue link (`https://github.com/owner/repo/issues/12`), `owner/repo#12`, or just `#12` for the target project's repo; or a Jira key (`PROJ-123`) or Jira issue link. Press Enter to preview it.
 
-Press **Send to the team**. Issues are read with your `gh` login, so private repos work. Closed issues are refused, and an issue already being worked on can't be sent twice. The PR links the issue and ends with `Closes owner/repo#12`, so merging the PR closes the issue.
+Press **Send to the team**. GitHub issues are read with your `gh` login, so private repos work. Closed or done issues are refused, and an issue already being worked on can't be sent twice. For a GitHub issue the PR ends with `Closes owner/repo#12`, so merging the PR closes the issue. For a Jira issue the PR title starts with the key (`PROJ-123: …`), so Jira's Bitbucket/GitHub integration links the PR to the issue.
+
+### Bitbucket Cloud and Jira
+
+The host is detected from the project's `origin` remote: `github.com` uses the GitHub CLI as before, `bitbucket.org` uses the Bitbucket REST API. Nothing changes for GitHub projects.
+
+In **Settings → Bitbucket & Jira**, fill in:
+
+| Field | Example | Needed for |
+|---|---|---|
+| Atlassian account email | `you@company.com` | Bitbucket and Jira |
+| Bitbucket API token | (stored, never shown again) | opening/updating PRs and reading review comments on Bitbucket projects |
+| Jira site | `your-company.atlassian.net` | Jira tickets |
+| Jira API token | (stored, never shown again) | Jira tickets |
+| Jira project key / issue type | `PROJ` / `Task` | Ideas → **Create issue** on non-GitHub projects, and listing open issues during research |
+
+Create both tokens in your Atlassian account's security settings. The Bitbucket token needs scopes to read and write pull requests, and to read repositories and your account. Instead of Settings you can set `ATLASSIAN_EMAIL`, `BITBUCKET_API_TOKEN` and `JIRA_API_TOKEN`.
+
+- Tokens are kept in `data/secrets.json`. They are only sent to `api.bitbucket.org` and your configured Jira site; links to any other site are refused. They are removed from the agents' environment.
+- `git push` uses your normal git credentials for bitbucket.org (for example Git Credential Manager).
+- **Address review comments** on Bitbucket trusts comments only from the PR's reviewers and from your own account. Bitbucket shows repository permissions only to admins, so reviewer status is what decides trust. Add the people whose comments should reach Dev as reviewers.
+- Jira issues aren't closed automatically. Move them in Jira, or use Jira automation on PR merge.
 
 Try the UI without using any of your plan's usage:
 
@@ -32,7 +53,8 @@ node --env-file=.env.demo apps/server/src/main.ts   # scripted demo team + sampl
 
 ### Requirements
 
-- Node 24+, git, GitHub CLI (`gh auth login`)
+- Node 24+, git
+- GitHub projects: GitHub CLI (`gh auth login`). Bitbucket/Jira: an Atlassian email and API tokens (see above).
 - Claude Code CLI signed in with your subscription (`claude`, then log in). Run `claude update` if Settings says your version does not support the configured model.
 
 #### Using Node 24 without changing your default (Windows, nvm-windows)
@@ -61,9 +83,9 @@ The **Ideas** page runs a research loop. Nothing gets built until you approve an
 
 1. Write a **product brief** (who it's for, how it makes money, goals, off-limits areas) and press **Start research**.
 2. Each round, the PM studies the product from the user's side and the CTO from the engineering side (both read-only). The CEO then reads their notes, researches the market on the web (read-only; web pages are treated as untrusted data), and proposes ranked ideas. Each idea has a problem, proposal, user value, business value, effort, risks and evidence.
-3. The team is shown every earlier idea, ticket and open GitHub issue, and repeats are dropped.
+3. The team is shown every earlier idea, ticket and open GitHub or Jira issue, and repeats are dropped.
 4. It keeps going until it reaches the idea limit (default 10), until 2 rounds in a row produce nothing new, or until you press **Stop**. Usage limits pause it.
-5. Review each idea: **Send to team** (it becomes a normal ticket and goes through the full pipeline), **Create GitHub issue** (park it; a ticket sent later closes the issue), or **Dismiss**.
+5. Review each idea: **Send to team** (it becomes a normal ticket and goes through the full pipeline), **Create issue** (park it: a GitHub issue that a ticket sent later closes, or a Jira issue for non-GitHub projects), or **Dismiss**.
 
 Research shows in the Canvas, Office and status rows like any other work.
 

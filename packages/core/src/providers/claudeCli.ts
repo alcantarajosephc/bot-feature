@@ -18,7 +18,7 @@ export interface ClaudeCliOptions {
 const DEFAULT_HOOK = path.resolve(import.meta.dirname, "../guardrails/hook-cli.ts");
 
 /** Env vars that must never reach an agent: they would switch billing to the API or grant extra access. */
-const STRIP_ENV = /^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_.*|CLAUDECODE|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_.*|AZURE_.*|GOOGLE_APPLICATION_CREDENTIALS)$/i;
+const STRIP_ENV = /^(ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_.*|CLAUDECODE|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_.*|AZURE_.*|GOOGLE_APPLICATION_CREDENTIALS|BITBUCKET_.*|JIRA_.*|ATLASSIAN_.*)$/i;
 
 export function agentEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
