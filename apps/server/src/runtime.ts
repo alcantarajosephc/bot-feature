@@ -8,6 +8,7 @@ import {
   GhCliPublisher,
   GitHubIssueSource,
   GhReviewSource,
+  IdeaLab,
   type GhRunner,
   GitService,
   Store,
@@ -86,6 +87,7 @@ export interface Runtime {
   team: Team;
   secrets: SecretStore;
   issues: GitHubIssueSource;
+  lab: IdeaLab;
   getSettings(): AppSettings;
   updateSettings(patch: unknown): AppSettings;
   close(): Promise<void>;
@@ -116,11 +118,12 @@ export function createRuntime(o: RuntimeOptions): Runtime {
   const bus = new EventBus();
   const git = new GitService();
   const getSettings = () => settings;
+  const provider = new SwitchingProvider(o.dataDir, getSettings, o.demoDelayMs ?? 1200);
   const team = new Team({
     roles,
     pipeline,
     promptsDir: PROMPTS_DIR,
-    provider: new SwitchingProvider(o.dataDir, getSettings, o.demoDelayMs ?? 1200),
+    provider,
     store,
     bus,
     git,
@@ -129,6 +132,7 @@ export function createRuntime(o: RuntimeOptions): Runtime {
     settings: teamSettingsOf(settings),
     reviews: new GhReviewSource(o.ghRunner),
   });
+  const lab = new IdeaLab({ team, provider, store, promptsDir: PROMPTS_DIR, dataDir: o.dataDir, settings: getSettings, gh: o.ghRunner });
   return {
     dataDir: o.dataDir,
     store,
@@ -137,6 +141,7 @@ export function createRuntime(o: RuntimeOptions): Runtime {
     team,
     secrets: new SecretStore(o.dataDir),
     issues: new GitHubIssueSource(o.ghRunner),
+    lab,
     getSettings,
     updateSettings(patch) {
       settings = saveSettings(store, patch);
@@ -144,6 +149,8 @@ export function createRuntime(o: RuntimeOptions): Runtime {
       return settings;
     },
     async close() {
+      lab.stop();
+      await lab.waitUntilIdle();
       await team.stop();
       store.close();
     },

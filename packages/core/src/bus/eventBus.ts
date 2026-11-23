@@ -1,4 +1,4 @@
-import type { LogLine, StageRun, Ticket, WorkerStatus } from "../types.ts";
+import type { Idea, LabStatus, LogLine, StageRun, Ticket, WorkerStatus } from "../types.ts";
 
 export interface WorkerSnapshot {
   roleId: string;
@@ -15,7 +15,9 @@ export type BusEvent =
   | { type: "run"; run: StageRun }
   | { type: "worker"; worker: WorkerSnapshot }
   | { type: "log"; log: LogLine }
-  | { type: "handoff"; ticketId: string; from: string; to: string; kind: HandoffKind; ts: number };
+  | { type: "handoff"; ticketId: string; from: string; to: string; kind: HandoffKind; ts: number }
+  | { type: "idea"; idea: Idea }
+  | { type: "lab"; lab: LabStatus };
 
 export type BusListener = (e: BusEvent) => void;
 

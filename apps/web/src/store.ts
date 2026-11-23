@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { api } from "./api.ts";
-import type { AppSettings, BusEvent, LogLine, PublicRole, StageSpec, Ticket, WorkerSnapshot } from "./types.ts";
+import type { AppSettings, BusEvent, Idea, LabStatus, LogLine, PublicRole, StageSpec, Ticket, WorkerSnapshot } from "./types.ts";
 
 export interface Handoff {
   ticketId: string;
@@ -20,6 +20,8 @@ export interface AppState {
   logs: LogLine[];
   handoffs: Handoff[];
   settings?: AppSettings;
+  lab: LabStatus;
+  ideas: Record<string, Idea>;
   /** Bumped when a stage run of the ticket changes, so detail views refetch. */
   runVersion: Record<string, number>;
   selectedTicketId?: string;
@@ -29,7 +31,19 @@ export interface AppState {
 
 const MAX_LOGS = 800;
 
-let state: AppState = { loaded: false, connected: false, roles: [], stages: [], workers: {}, tickets: {}, logs: [], handoffs: [], runVersion: {} };
+let state: AppState = {
+  loaded: false,
+  connected: false,
+  roles: [],
+  stages: [],
+  workers: {},
+  tickets: {},
+  logs: [],
+  handoffs: [],
+  runVersion: {},
+  lab: { state: "idle", round: 0, ideasThisRun: 0 },
+  ideas: {},
+};
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)): void {
@@ -77,6 +91,8 @@ export async function refresh(): Promise<void> {
       tickets,
       logs: s.logs,
       settings: s.settings,
+      lab: s.lab,
+      ideas: Object.fromEntries(s.ideas.map((i) => [i.id, i])),
       selectedTicketId: st.selectedTicketId && tickets[st.selectedTicketId] ? st.selectedTicketId : newestTicketId(tickets),
     }));
   } catch (e) {
@@ -104,6 +120,12 @@ function apply(e: BusEvent): void {
       break;
     case "run":
       set((s) => ({ runVersion: { ...s.runVersion, [e.run.ticketId]: (s.runVersion[e.run.ticketId] ?? 0) + 1 } }));
+      break;
+    case "idea":
+      set((s) => ({ ideas: { ...s.ideas, [e.idea.id]: e.idea } }));
+      break;
+    case "lab":
+      set({ lab: e.lab });
       break;
     case "handoff":
       set((s) => ({ handoffs: [...s.handoffs.slice(-50), { ticketId: e.ticketId, from: e.from, to: e.to, kind: e.kind, ts: e.ts }] }));

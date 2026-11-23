@@ -1,4 +1,4 @@
-import type { AppSettings, LogLine, PublicRole, StageRun, StageSpec, Ticket, WorkerSnapshot } from "./types.ts";
+import type { AppSettings, Idea, LabStatus, LogLine, PublicRole, StageRun, StageSpec, Ticket, WorkerSnapshot } from "./types.ts";
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   const r = await fetch(url, {
@@ -19,6 +19,8 @@ export interface StateResponse {
   tickets: Ticket[];
   logs: LogLine[];
   settings: AppSettings;
+  lab: LabStatus;
+  ideas: Idea[];
 }
 
 export interface TicketDetail {
@@ -55,4 +57,10 @@ export const api = {
   saveSettings: (patch: Partial<AppSettings>) => req<{ settings: AppSettings; secrets: Record<string, { set: boolean }> }>("PUT", "/api/settings", patch),
   saveSecret: (anthropicApiKey: string | null) => req<{ secrets: Record<string, { set: boolean }> }>("PUT", "/api/secrets", { anthropicApiKey }),
   checks: () => req<Checks>("GET", "/api/checks"),
+  labStart: () => req<LabStatus>("POST", "/api/lab/start"),
+  labStop: () => req<LabStatus>("POST", "/api/lab/stop"),
+  labResumeNow: () => req<LabStatus>("POST", "/api/lab/resume-now"),
+  sendIdea: (id: string) => req<Ticket>("POST", `/api/ideas/${id}/send`),
+  dismissIdea: (id: string) => req<Idea>("POST", `/api/ideas/${id}/dismiss`),
+  issueIdea: (id: string) => req<Idea>("POST", `/api/ideas/${id}/issue`),
 };

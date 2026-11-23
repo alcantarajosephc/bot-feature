@@ -67,6 +67,8 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
       tickets: rt.store.listTickets(100),
       logs: rt.store.listLogs({ limit: 300 }),
       settings: s,
+      lab: rt.lab.status(),
+      ideas: rt.lab.listIdeas(),
     };
   });
 
@@ -147,6 +149,29 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
     const text = fs.readFileSync(file, "utf8");
     return reply.type("text/plain; charset=utf-8").send(text.length > 2_000_000 ? text.slice(-2_000_000) : text);
   });
+
+  // research loop ("Ideas")
+  const labAction = (fn: () => unknown) => async (_req: unknown, reply: { code: (n: number) => { send: (b: unknown) => unknown } }) => {
+    try {
+      return await fn();
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  };
+  app.get("/api/lab", async () => rt.lab.status());
+  app.post("/api/lab/start", labAction(() => rt.lab.start()));
+  app.post("/api/lab/stop", labAction(() => (rt.lab.stop(), rt.lab.status())));
+  app.post("/api/lab/resume-now", labAction(() => (rt.lab.resumeNow(), rt.lab.status())));
+  app.get("/api/ideas", async () => rt.lab.listIdeas());
+  app.post<{ Params: { id: string } }>("/api/ideas/:id/send", async (req, reply) => {
+    try {
+      return reply.code(201).send(rt.lab.sendToTeam(req.params.id));
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/ideas/:id/dismiss", async (req, reply) => labAction(() => rt.lab.dismiss(req.params.id))(req, reply));
+  app.post<{ Params: { id: string } }>("/api/ideas/:id/issue", async (req, reply) => labAction(() => rt.lab.createIssue(req.params.id))(req, reply));
 
   app.get("/api/settings", async () => ({ settings: rt.getSettings(), secrets: rt.secrets.status() }));
 

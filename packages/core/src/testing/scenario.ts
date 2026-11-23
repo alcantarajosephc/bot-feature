@@ -204,6 +204,45 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
           ],
           output: { summary: "Documented greet in README and CHANGELOG.", updatedFiles: ["README.md", "CHANGELOG.md"], changelogEntry: "Added `greet(name)`." },
         };
+      case "research-pm":
+      case "research-cto":
+        return {
+          ...base,
+          output: {
+            summary: req.stageId === "research-pm" ? "Users can only add and subtract." : "Pure functions, easy to extend and test.",
+            findings: [{ title: "Tiny API", detail: "Only add and subtract are exported.", evidence: "src/math.js" }],
+            ideas: [{ title: "More arithmetic", problem: "Common operations are missing", proposal: "Add multiply/divide", value: "Covers everyday use" }],
+          },
+        };
+      case "research-ceo": {
+        const pool: [string, string, string, "S" | "M" | "L"][] = [
+          ["Add multiply and divide", "Users must write their own multiply/divide.", "Export multiply(a, b) and divide(a, b) with input checks.", "S"],
+          ["Add a rounding helper", "Money and grades need consistent rounding.", "Export round(n, decimals) with banker's rounding option.", "S"],
+          ["Publish a CLI", "Teachers want to use it without writing code.", "Add a small `math` command-line tool.", "M"],
+          ["Add percentage helpers", "Percent change is a top request in school apps.", "Export percent(part, whole) and percentChange(a, b).", "S"],
+          ["Ship TypeScript types", "TS users get no autocomplete.", "Add a .d.ts file for every export.", "S"],
+          ["Add statistics helpers", "Mean/median are needed for grade reports.", "Export mean, median and mode.", "M"],
+        ];
+        const start = ((n - 1) * 3) % pool.length;
+        const picks = [0, 1, 2].map((k) => pool[(start + k) % pool.length]!);
+        return {
+          ...base,
+          output: {
+            summary: "Ranked the strongest ideas for schools.",
+            marketNotes: [{ finding: "Competing libraries bundle rounding and percentages.", source: "https://example.com/math-libraries" }],
+            ideas: picks.map(([title, problem, proposal, effort]) => ({
+              title,
+              problem,
+              proposal,
+              userValue: "Less code to write in school projects.",
+              businessValue: "Closes a gap with competitors, which helps adoption and paid support.",
+              effort,
+              risks: ["Small API surface growth"],
+              evidence: ["src/math.js", "README.md"],
+            })),
+          },
+        };
+      }
       default:
         return { ...base, output: { summary: `${req.stageId} has nothing to add.`, blocking: [], notes: [] } };
     }

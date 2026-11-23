@@ -1,4 +1,4 @@
-export type { Ticket, StageRun, LogLine, Usage, WorkerStatus, TicketStatus } from "../../../packages/core/src/types.ts";
+export type { Ticket, StageRun, LogLine, Usage, WorkerStatus, TicketStatus, Idea, LabStatus } from "../../../packages/core/src/types.ts";
 export type { BusEvent, WorkerSnapshot } from "../../../packages/core/src/bus/eventBus.ts";
 export type { StageSpec, SpriteSpec } from "../../../packages/core/src/roles/config.ts";
 
@@ -28,4 +28,9 @@ export interface AppSettings {
   usageLimitRetryMinutes: number;
   testCommand: string;
   installDeps: boolean;
+  productBrief: string;
+  maxIdeas: number;
+  ideasPerRound: number;
+  webResearch: boolean;
+  maxEmptyRounds: number;
 }

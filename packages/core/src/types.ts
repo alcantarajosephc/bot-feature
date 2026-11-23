@@ -115,6 +115,39 @@ export interface StageRun {
   transcriptPath?: string;
 }
 
+/** An improvement proposed by the research loop, waiting for a human decision. */
+export interface Idea {
+  id: string;
+  createdAt: number;
+  round: number;
+  repoPath: string;
+  status: "new" | "sent" | "dismissed" | "issue";
+  title: string;
+  problem: string;
+  proposal: string;
+  userValue: string;
+  businessValue: string;
+  effort: "S" | "M" | "L";
+  risks: string[];
+  /** Files, issues or URLs the idea is based on. */
+  evidence: string[];
+  ticketId?: string;
+  issueUrl?: string;
+  issueRef?: string;
+}
+
+export interface LabStatus {
+  state: "idle" | "running" | "paused" | "stopping";
+  round: number;
+  /** Ideas saved in the current (or last) run. */
+  ideasThisRun: number;
+  startedAt?: number;
+  resumeAt?: number;
+  /** Why the last run ended: limit reached, no new ideas, Stop pressed, or an error. */
+  stopReason?: "limit" | "no-new-ideas" | "stopped" | "error";
+  error?: string;
+}
+
 export type LogKind = "info" | "tool" | "warn" | "error" | "handoff";
 
 export interface LogLine {

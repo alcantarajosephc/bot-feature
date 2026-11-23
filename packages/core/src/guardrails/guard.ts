@@ -9,6 +9,8 @@ export interface GuardPolicy {
   write: "none" | "all" | string[];
   /** Allowed shell commands. `*` at the end matches any further arguments. */
   commands: string[];
+  /** Read-only web research (WebSearch/WebFetch). Off unless a role explicitly needs it. */
+  web?: boolean;
 }
 
 export interface Decision {
@@ -119,6 +121,10 @@ export function evaluateToolUse(tool: string, input: Record<string, unknown>, po
       }
     }
     return { allow: true };
+  }
+
+  if (tool === "WebSearch" || tool === "WebFetch") {
+    return policy.web ? { allow: true } : { allow: false, reason: "Web access is not available to this role." };
   }
 
   if (tool === "Bash" || tool === "PowerShell") {

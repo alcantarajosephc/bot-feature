@@ -33,7 +33,7 @@ export function StatusRows() {
                 </span>
               </td>
               <td>{w ? <WorkerBadge status={w.status} /> : <WorkerBadge status="idle" />}</td>
-              <td className="ellipsis">{a ? (tickets[a.ticketId]?.title ?? a.ticketId) : <span className="muted">-</span>}</td>
+              <td className="ellipsis">{a ? (a.ticketId === "idea-lab" ? "Idea research" : (tickets[a.ticketId]?.title ?? a.ticketId)) : <span className="muted">-</span>}</td>
               <td className="ellipsis">{a?.task ?? <span className="muted">-</span>}</td>
               <td>{w?.queue ?? 0}</td>
               <td className="ellipsis muted">{last?.text ?? ""}</td>

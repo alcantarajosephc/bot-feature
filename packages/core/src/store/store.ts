@@ -19,7 +19,18 @@ export class Store {
       CREATE INDEX IF NOT EXISTS logs_ticket ON logs(ticket_id, id);
       CREATE TABLE IF NOT EXISTS state (ticket_id TEXT PRIMARY KEY, data TEXT);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE IF NOT EXISTS ideas (id TEXT PRIMARY KEY, created_at INTEGER, data TEXT);
     `);
+  }
+
+  saveIdea<T extends { id: string; createdAt: number }>(idea: T): void {
+    this.db
+      .prepare("INSERT INTO ideas (id, created_at, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data")
+      .run(idea.id, idea.createdAt, JSON.stringify(idea));
+  }
+
+  listIdeas<T>(): T[] {
+    return (this.db.prepare("SELECT data FROM ideas ORDER BY created_at DESC, id").all() as { data: string }[]).map((r) => JSON.parse(r.data) as T);
   }
 
   saveTicket(t: Ticket): void {

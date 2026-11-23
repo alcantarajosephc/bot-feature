@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { DEFAULT_SETTINGS, type Store, type TeamSettings } from "@agents/core";
+import { DEFAULT_LAB_SETTINGS, DEFAULT_SETTINGS, type Store, type TeamSettings } from "@agents/core";
 
 export const appSettingsSchema = z.object({
   /** Local folder of the target project (a git repo with a GitHub remote). */
@@ -17,6 +17,12 @@ export const appSettingsSchema = z.object({
   usageLimitRetryMinutes: z.number().int().min(1).max(600),
   testCommand: z.string().max(300),
   installDeps: z.boolean(),
+  /** Research loop: who the product is for, how it makes money, goals, off-limits areas. */
+  productBrief: z.string().max(10_000),
+  maxIdeas: z.number().int().min(1).max(50),
+  ideasPerRound: z.number().int().min(1).max(10),
+  webResearch: z.boolean(),
+  maxEmptyRounds: z.number().int().min(1).max(5),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -26,6 +32,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   dryRun: true,
   provider: "claude-cli",
   ...DEFAULT_SETTINGS,
+  ...DEFAULT_LAB_SETTINGS,
 };
 
 export function loadSettings(store: Store): AppSettings {

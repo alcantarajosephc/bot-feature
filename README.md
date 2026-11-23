@@ -35,6 +35,18 @@ node --env-file=.env.demo apps/server/src/main.ts   # scripted demo team + sampl
 - Node 24+, git, GitHub CLI (`gh auth login`)
 - Claude Code CLI signed in with your subscription (`claude`, then log in). Run `claude update` if Settings says your version does not support the configured model.
 
+## Ideas: research mode
+
+The **Ideas** page runs a research loop. Nothing gets built until you approve an idea.
+
+1. Write a **product brief** (who it's for, how it makes money, goals, off-limits areas) and press **Start research**.
+2. Each round, the PM studies the product from the user's side and the CTO from the engineering side (both read-only). The CEO then reads their notes, researches the market on the web (read-only; web pages are treated as untrusted data), and proposes ranked ideas. Each idea has a problem, proposal, user value, business value, effort, risks and evidence.
+3. The team is shown every earlier idea, ticket and open GitHub issue, and repeats are dropped.
+4. It keeps going until it reaches the idea limit (default 10), until 2 rounds in a row produce nothing new, or until you press **Stop**. Usage limits pause it.
+5. Review each idea: **Send to team** (it becomes a normal ticket and goes through the full pipeline), **Create GitHub issue** (park it; a ticket sent later closes the issue), or **Dismiss**.
+
+Research shows in the Canvas, Office and status rows like any other work.
+
 ## After the PR opens: follow-ups
 
 Keep working on the same ticket instead of creating a new one. Click **Follow up** in the Canvas/Office toolbar, or use the box on the ticket's History page:

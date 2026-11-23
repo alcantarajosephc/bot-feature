@@ -368,6 +368,64 @@ label.inline input,
   background: var(--panel-2);
   color: var(--text);
 }
+.nav-count {
+  margin-left: 6px;
+  background: var(--accent);
+  color: #052e16;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+button.danger {
+  background: #7f1d1d;
+  border-color: #b91c1c;
+  font-weight: 600;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+.lab-controls p {
+  margin: 8px 0 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0 16px;
+}
+.idea h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.idea h4 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.idea p,
+.idea ul {
+  margin: 0 0 8px;
+}
+.idea ul {
+  padding-left: 18px;
+}
+.idea-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 20px;
+  margin: 10px 0;
+}
+.idea-dismissed {
+  opacity: 0.6;
+}
+@media (max-width: 900px) {
+  .idea-grid,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+}
 .follow-up {
   display: flex;
   flex-direction: column;

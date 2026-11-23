@@ -113,6 +113,28 @@ describe("API", () => {
     expect(d.runs.filter((r: { revision?: number }) => r.revision === 1).length).toBe(4);
   });
 
+  it("runs the research loop and turns an approved idea into a ticket", async () => {
+    await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { productBrief: "Math helpers for schools.", maxIdeas: 4, ideasPerRound: 2 } });
+    const start = await app.inject({ method: "POST", url: "/api/lab/start", headers: H });
+    expect(start.statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/api/lab/start", headers: H })).statusCode).toBe(400);
+    const st = await rt.lab.waitUntilIdle();
+    expect(st.stopReason).toBe("limit");
+    const ideas = (await app.inject({ method: "GET", url: "/api/ideas", headers: H })).json();
+    expect(ideas).toHaveLength(4);
+    const lab = (await app.inject({ method: "GET", url: "/api/lab", headers: H })).json();
+    expect(lab).toMatchObject({ state: "idle", ideasThisRun: 4 });
+
+    const sent = await app.inject({ method: "POST", url: `/api/ideas/${ideas[0].id}/send`, headers: H });
+    expect(sent.statusCode).toBe(201);
+    expect(sent.json()).toMatchObject({ source: "idea", title: ideas[0].title });
+    expect((await app.inject({ method: "POST", url: `/api/ideas/${ideas[0].id}/send`, headers: H })).statusCode).toBe(400);
+    const dis = await app.inject({ method: "POST", url: `/api/ideas/${ideas[1].id}/dismiss`, headers: H });
+    expect(dis.json().status).toBe("dismissed");
+    await rt.team.waitForFinal(sent.json().id);
+    expect((await app.inject({ method: "POST", url: "/api/lab/stop", headers: H })).statusCode).toBe(200);
+  });
+
   it("validates and saves settings", async () => {
     const bad = await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { ticketConcurrency: 99 } });
     expect(bad.statusCode).toBe(400);

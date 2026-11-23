@@ -187,3 +187,36 @@ test("a follow-up change request reruns Dev onward on the same ticket and shows 
   await page.getByRole("tab", { name: "PR description" }).click();
   await expect(page.getByTestId("pr-body")).toContainText("Revision 1: Change request");
 });
+
+test("research loop: CEO/PM/CTO propose ideas until they run dry; nothing is built until you send one", async ({ page }) => {
+  await page.goto("/ideas");
+  await expect(page.getByTestId("lab-status")).toContainText("Idle");
+  await page.getByLabel("Product brief").fill("Math helpers for schools. Paid support plans.");
+  await page.getByTestId("save-research").click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+
+  const ticketsBefore = await page.evaluate(async () => (await (await fetch("/api/tickets")).json()).length);
+  await page.getByTestId("lab-start").click();
+  await expect(page.getByTestId("lab-stop")).toBeVisible();
+  await expect(page.getByTestId("lab-start")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("lab-status")).toContainText("found nothing new");
+  await expect(page.getByTestId("idea-card")).toHaveCount(6);
+  await expect(page.getByTestId("lab-activity")).toContainText("Research finished");
+  // research alone creates no tickets
+  expect(await page.evaluate(async () => (await (await fetch("/api/tickets")).json()).length)).toBe(ticketsBefore);
+  await expect(page.getByRole("link", { name: /Ideas/ })).toContainText("6");
+
+  const first = page.getByTestId("idea-card").first();
+  const title = await first.locator("h3").innerText();
+  await first.getByRole("button", { name: "Send to team" }).click();
+  await expect(page.getByTestId("idea-card")).toHaveCount(5);
+  await page.getByTestId("idea-card").first().getByRole("button", { name: "Dismiss" }).click();
+  await expect(page.getByTestId("idea-card")).toHaveCount(4);
+
+  await page.getByRole("tab", { name: /Sent/ }).click();
+  const sent = page.getByTestId("idea-card");
+  await expect(sent).toHaveCount(1);
+  await sent.getByRole("link", { name: "Open ticket →" }).click();
+  await expect(page.getByTestId("ticket-detail")).toContainText(title);
+  await expect(page.getByTestId("ticket-status")).toHaveText(/PR ready/, { timeout: 45_000 });
+});
