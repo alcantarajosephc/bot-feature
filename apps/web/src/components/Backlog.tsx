@@ -54,12 +54,14 @@ export function Backlog() {
   const toReview = ideaList.filter((i) => i.status === "new").length;
   const parked = ideaList.filter((i) => i.status === "issue");
 
+  /** Everyone working on the ticket right now, e.g. "Kai: Setting up workspace · Priya: Writing stories". */
   const whoIsOn = (t: Ticket) => {
+    const parts: string[] = [];
     for (const w of Object.values(workers)) {
       const a = w.active.find((x) => x.ticketId === t.id);
-      if (a) return `${roles.find((r) => r.id === w.roleId)?.name ?? w.roleId}: ${a.task}`;
+      if (a) parts.push(`${roles.find((r) => r.id === w.roleId)?.name ?? w.roleId}: ${a.task}`);
     }
-    return undefined;
+    return parts.length ? parts.join(" · ") : undefined;
   };
   const pick = (t: Ticket) => actions.selectTicket(t.id);
 

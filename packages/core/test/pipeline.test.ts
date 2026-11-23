@@ -3,9 +3,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createTestTeam, type TestTeam } from "../src/testing/testTeam.ts";
-import { SAMPLE_TICKET } from "../src/testing/scenario.ts";
+import { createTestTeam, PROMPTS_DIR, type TestTeam } from "../src/testing/testTeam.ts";
+import { createScenario, SAMPLE_TICKET } from "../src/testing/scenario.ts";
 import type { BusEvent } from "../src/bus/eventBus.ts";
+import { Team } from "../src/pipeline/team.ts";
+import { FakeProvider } from "../src/providers/fake.ts";
+import { roles, pipeline } from "../../../roles/roles.config.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -76,6 +79,43 @@ describe("pipeline: happy path", () => {
     await env.team.waitForFinal(t.id);
     const firstStage = stages.find((s) => s);
     expect(firstStage).toBe("setup");
+  });
+
+  it("has Dev install dependencies in the background while the planning roles start right away", async () => {
+    env = await createTestTeam({ settings: { installCommand: `node -e "setTimeout(() => {}, 2500)"` } });
+    const logs: { ts: number; text: string; roleId: string }[] = [];
+    const devTasks: string[] = [];
+    env.bus.subscribe((e: BusEvent) => {
+      if (e.type === "log") logs.push(e.log);
+      if (e.type === "worker" && e.worker.roleId === "dev") devTasks.push(...e.worker.active.map((a) => a.task));
+    });
+    const t = env.team.submit(SAMPLE_TICKET, env.repo.path);
+    const done = await env.team.waitForFinal(t.id);
+    expect(done.status).toBe("pr_ready");
+
+    expect(devTasks).toContain("Setting up workspace");
+    const ready = logs.find((l) => /Workspace ready/.test(l.text))!;
+    expect(ready.roleId).toBe("dev");
+    const runs = env.store.listRuns(t.id);
+    expect(runs.find((r) => r.stageId === "ceo")!.startedAt).toBeLessThan(ready.ts); // planning didn't wait
+    expect(runs.find((r) => r.stageId === "dev")!.startedAt).toBeGreaterThanOrEqual(ready.ts); // Dev did
+
+    // a follow-up on the same worktree does not install again
+    await env.team.followUp(t.id, { kind: "change", text: "Tiny tweak." });
+    await env.team.waitForFinal(t.id);
+    expect(logs.filter((l) => /Setting up the workspace/.test(l.text))).toHaveLength(1);
+  });
+
+  it("keeps going when the dependency install fails", async () => {
+    env = await createTestTeam({ settings: { installCommand: `node -e "process.exit(3)"` } });
+    const warnings: string[] = [];
+    env.bus.subscribe((e: BusEvent) => {
+      if (e.type === "log" && e.log.kind === "warn") warnings.push(e.log.text);
+    });
+    const t = env.team.submit(SAMPLE_TICKET, env.repo.path);
+    const done = await env.team.waitForFinal(t.id);
+    expect(done.status).toBe("pr_ready");
+    expect(warnings.some((w) => /install failed/i.test(w))).toBe(true);
   });
 
   it("passes earlier decisions to later roles", async () => {
@@ -240,6 +280,33 @@ describe("pipeline: guardrails and resilience", () => {
     expect(da.status).toBe("pr_ready");
     expect(db.status).toBe("pr_ready");
     expect(da.branch).not.toBe(db.branch);
+  });
+
+  it("picks up where it left off when the app is stopped mid-pipeline and started again", async () => {
+    env = await createTestTeam({ scenario: { delayMs: 300 } });
+    const t = env.team.submit(SAMPLE_TICKET, env.repo.path);
+    const queued = env.team.submit({ ...SAMPLE_TICKET, title: "Second ticket waiting" }, env.repo.path);
+    for (let i = 0; i < 100 && !env.store.listRuns(t.id).some((r) => r.stageId === "pm" && r.status === "running"); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await env.team.shutdown(); // what Ctrl+C does
+
+    const after = env.store.getTicket(t.id)!;
+    expect(after.status).toBe("queued"); // interrupted, not cancelled
+    expect(env.store.getTicket(queued.id)!.status).toBe("queued");
+    expect(env.store.listRuns(t.id).find((r) => r.stageId === "pm")!.error).toMatch(/interrupted/i);
+
+    // "restart": a new team on the same database and data folder
+    const team2 = new Team({ roles, pipeline, promptsDir: PROMPTS_DIR, provider: new FakeProvider(createScenario()), store: env.store, publisher: env.publisher, dataDir: env.dataDir });
+    team2.resumeUnfinished();
+    const done = await team2.waitForFinal(t.id);
+    const done2 = await team2.waitForFinal(queued.id);
+    expect(done.status).toBe("pr_ready");
+    expect(done2.status).toBe("pr_ready");
+    const finished = env.store.listRuns(t.id).filter((r) => r.status === "done").map((r) => r.stageId);
+    expect(finished.filter((s) => s === "ceo")).toHaveLength(1); // the CEO's work was kept
+    expect(finished).toEqual(["ceo", "pm", "designer", "cto", "security-plan", "dev", "qa", "security-diff", "docs"]);
+    await team2.stop();
   });
 
   it("can cancel a running ticket", async () => {

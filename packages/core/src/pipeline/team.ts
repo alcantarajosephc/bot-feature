@@ -35,6 +35,8 @@ export interface TeamSettings {
   testCommand: string;
   /** Install the project's existing dependencies in a fresh worktree. */
   installDeps: boolean;
+  /** Overrides the detected install command (e.g. "pnpm install --frozen-lockfile"). */
+  installCommand: string;
 }
 
 export const DEFAULT_SETTINGS: TeamSettings = {
@@ -45,6 +47,7 @@ export const DEFAULT_SETTINGS: TeamSettings = {
   usageLimitRetryMinutes: 30,
   testCommand: "",
   installDeps: true,
+  installCommand: "",
 };
 
 export interface TeamOptions {
@@ -108,6 +111,8 @@ interface Ctx {
   state: RunState;
   signal: AbortSignal;
   deadline: number;
+  /** The background dependency install, when one is running. */
+  install?: Promise<void>;
 }
 
 export function slugify(s: string): string {
@@ -146,6 +151,8 @@ export class Team {
   readonly workers = new Map<string, RoleWorker>();
   private settings: TeamSettings;
   private controllers = new Map<string, AbortController>();
+  private runs = new Map<string, Promise<void>>();
+  private shuttingDown = false;
   private queue: string[] = [];
   private waiters = new Map<string, ((t: Ticket) => void)[]>();
   private wakers = new Map<string, () => void>();
@@ -360,20 +367,34 @@ export class Team {
     await Promise.all(ids.map((id) => this.waitForFinal(id)));
   }
 
+  /**
+   * For app shutdown (Ctrl+C): stops the running agents but does not cancel anything. Running tickets go back to
+   * "queued" and continue from the stage they were on when the app starts again (resumeUnfinished).
+   */
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.queue.length = 0;
+    const running = [...this.runs.values()];
+    for (const c of this.controllers.values()) c.abort();
+    await Promise.all(running);
+  }
+
   // ---------------------------------------------------------------------------
 
   private pump(): void {
-    while (this.controllers.size < this.settings.ticketConcurrency && this.queue.length) {
+    while (!this.shuttingDown && this.controllers.size < this.settings.ticketConcurrency && this.queue.length) {
       const id = this.queue.shift()!;
       const ac = new AbortController();
       this.controllers.set(id, ac);
-      this.runTicket(id, ac.signal)
+      const run = this.runTicket(id, ac.signal)
         .catch((e) => console.error("ticket crashed", id, e))
         .finally(() => {
           this.controllers.delete(id);
+          this.runs.delete(id);
           this.notifyIfFinal(this.o.store.getTicket(id));
           this.pump();
         });
+      this.runs.set(id, run);
     }
   }
 
@@ -460,6 +481,12 @@ export class Team {
       await this.publish(ctx);
     } catch (e) {
       const t = ctx.ticket;
+      if (this.shuttingDown) {
+        // interrupted by the app stopping, not cancelled by a person: resume from this stage on next start
+        this.log(id, "warn", `Interrupted because the app stopped. It will continue from ${t.stage ? this.label(t.stage) : "the start"} when the app starts again.`);
+        ctx.update({ status: "queued" });
+        return;
+      }
       if (ctx.state.revision) this.setRevision(ctx, { status: signal.aborted || e instanceof Cancelled ? "cancelled" : "failed", endedAt: Date.now() });
       if (signal.aborted || e instanceof Cancelled) {
         this.log(id, "warn", "Ticket cancelled.");
@@ -506,8 +533,12 @@ export class Team {
 
   private async prepareWorkspace(ctx: Ctx): Promise<void> {
     const t = ctx.ticket;
-    if (t.worktree && fs.existsSync(t.worktree)) return;
-    // creating the worktree and installing dependencies can take minutes: show it, so it doesn't look stuck
+    if (t.worktree && fs.existsSync(t.worktree)) {
+      // e.g. the app was restarted mid-install: finish setting up in the background
+      ctx.install = this.startInstall(ctx, t.worktree);
+      return;
+    }
+    // creating the worktree can take a moment: show it, so it doesn't look stuck
     ctx.update({ stage: "setup" });
     const info = await this.git.inspectRepo(t.repoPath);
     if (!info.ok) throw new Error(info.error);
@@ -516,7 +547,7 @@ export class Team {
       const wtPath = await this.git.attachWorktree({ repoPath: info.root!, worktreesDir: path.join(this.o.dataDir, "worktrees"), ticketId: t.id, slug: slugify(t.title), branch: t.branch });
       ctx.update({ worktree: wtPath });
       this.log(t.id, "info", `Re-created the worktree for branch ${t.branch}`);
-      await this.installDeps(ctx, wtPath);
+      ctx.install = this.startInstall(ctx, wtPath);
       return;
     }
     const wt = await this.git.createWorktree({
@@ -528,16 +559,56 @@ export class Team {
     });
     ctx.update({ repoPath: info.root!, worktree: wt.path, branch: wt.branch, baseSha: wt.baseSha, defaultBranch: info.defaultBranch });
     this.log(t.id, "info", `Created isolated worktree on branch ${wt.branch}`);
-    await this.installDeps(ctx, wt.path);
+    ctx.install = this.startInstall(ctx, wt.path);
   }
 
-  private async installDeps(ctx: Ctx, wtPath: string): Promise<void> {
+  private depsMarker(ticketId: string): string {
+    return path.join(this.o.dataDir, "tickets", ticketId, "deps-installed");
+  }
+
+  /**
+   * Installs the project's dependencies as the Dev's job, in the background: the planning roles only read code,
+   * so they start right away; stages that run the project (Dev, QA, the test gate) wait for it (see needsDeps).
+   * Never rejects: a failed install is logged and the team carries on.
+   */
+  private startInstall(ctx: Ctx, wtPath: string): Promise<void> {
+    const id = ctx.ticket.id;
     const project = detectProject(wtPath);
-    if (this.settings.installDeps && project.installCommand && !fs.existsSync(path.join(wtPath, "node_modules"))) {
-      this.log(ctx.ticket.id, "info", `Installing existing dependencies: ${project.installCommand}`);
-      const r = await exec(project.installCommand, [], { cwd: wtPath, shell: true, timeoutMs: 15 * 60_000, signal: ctx.signal });
-      if (r.code !== 0) this.log(ctx.ticket.id, "warn", `Dependency install failed (continuing): ${tail(r.stderr || r.stdout, 500)}`);
-    }
+    const command = this.settings.installCommand.trim() || project.installCommand;
+    const marker = this.depsMarker(id);
+    const done = () => fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === wtPath;
+    if (!this.settings.installDeps || !command || done()) return Promise.resolve();
+    if (!this.settings.installCommand.trim() && fs.existsSync(path.join(wtPath, "node_modules"))) return Promise.resolve();
+    const devRole = this.o.roles.find((r) => r.kind === "dev");
+    const worker = devRole ? this.workers.get(devRole.id)! : undefined;
+    const job = async () => {
+      const started = Date.now();
+      const say = (kind: LogKind, text: string) => (worker ? worker.log(id, kind, text) : this.log(id, kind, text));
+      say("info", `Setting up the workspace: ${command}`);
+      const r = await exec(command, [], { cwd: wtPath, shell: true, timeoutMs: 15 * 60_000, signal: ctx.signal }).catch((e: Error) => ({ code: -1, stdout: "", stderr: e.message, timedOut: false }));
+      if (ctx.signal.aborted) return;
+      if (r.code !== 0) {
+        say("warn", `Dependency install failed (continuing): ${tail(r.stderr || r.stdout, 500)}`);
+        return;
+      }
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, wtPath);
+      say("info", `Workspace ready (${Math.round((Date.now() - started) / 1000)}s)`);
+    };
+    const p = worker ? worker.submit({ ticketId: id, task: "Setting up workspace" }, job) : job();
+    return p.catch(() => undefined);
+  }
+
+  private async waitForInstall(ctx: Ctx): Promise<void> {
+    if (!ctx.install) return;
+    await ctx.install;
+    ctx.install = undefined;
+    if (ctx.signal.aborted) throw new Cancelled();
+  }
+
+  /** Stages that run the project's code or tests need the dependencies installed first. */
+  private needsDeps(role: RoleConfig): boolean {
+    return role.kind === "dev" || role.kind === "qa" || role.commands === "test" || role.commands === "dev";
   }
 
   private checkLimits(ctx: Ctx): void {
@@ -552,6 +623,7 @@ export class Team {
       const stages = this.activeStages(s);
       if (s.index >= stages.length) {
         ctx.update({ stage: "verify" });
+        await this.waitForInstall(ctx);
         s.verify = await this.verify(ctx);
         if ("passed" in s.verify && !s.verify.passed) {
           const counter = this.o.pipeline.verifyCountsAs;
@@ -564,6 +636,7 @@ export class Team {
       }
       const stage = stages[s.index]!;
       const role = this.o.roles.find((r) => r.id === stage.role)!;
+      if (this.needsDeps(role)) await this.waitForInstall(ctx);
       const output = await this.runStage(ctx, stage, role);
       if (role.kind === "dev" && s.revision?.conflicts.length && (await this.git.isMerging(ctx.ticket.worktree!))) {
         const left = this.git.filesWithMarkers(ctx.ticket.worktree!, s.revision.conflicts);
@@ -750,7 +823,7 @@ export class Team {
         return output;
       } catch (e) {
         const cancelled = ctx.signal.aborted || e instanceof Cancelled;
-        run = { ...run, status: "error", endedAt: Date.now(), error: cancelled ? "Cancelled" : e instanceof Error ? e.message : String(e) };
+        run = { ...run, status: "error", endedAt: Date.now(), error: this.shuttingDown ? "Interrupted (the app stopped); this stage runs again on restart" : cancelled ? "Cancelled" : e instanceof Error ? e.message : String(e) };
         this.o.store.saveRun(run);
         this.bus.emit({ type: "run", run });
         if (cancelled) throw new Cancelled();
