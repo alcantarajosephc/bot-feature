@@ -247,7 +247,7 @@ export class Team {
       if (!note) throw new Error("Describe the change you want.");
       request = note;
     } else if (req.kind === "review") {
-      if (!t.prUrl) throw new Error("This ticket has no PR on GitHub (it was a dry run), so there are no review comments to read.");
+      if (!t.prUrl) throw new Error("This ticket has no PR on GitHub or Bitbucket (it was a dry run), so there are no review comments to read.");
       if (!this.o.reviews) throw new Error("Reading review comments is not set up.");
       const comments = await this.o.reviews.fetch(t.prUrl, t.lastPublishedAt);
       if (!comments.length) throw new Error("No new review comments from people with write access since the PR was last updated.");

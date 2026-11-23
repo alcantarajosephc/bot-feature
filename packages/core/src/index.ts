@@ -17,4 +17,7 @@ export * from "./pipeline/team.ts";
 export * from "./pipeline/project.ts";
 export * from "./tickets/sources.ts";
 export * from "./tickets/github.ts";
+export * from "./tickets/jira.ts";
+export * from "./pr/bitbucket.ts";
+export * from "./atlassian/http.ts";
 export * from "./ideas/ideaLab.ts";

@@ -23,7 +23,11 @@ export interface PrContext {
 const MAX_BODY = 60_000; // GitHub limit is 65,536 characters
 
 export function buildPrTitle(ticket: Ticket): string {
-  return ticket.title.trim().replace(/\s+/g, " ").slice(0, 120);
+  const title = ticket.title.trim().replace(/\s+/g, " ");
+  // A Jira key in the PR title lets Jira's Bitbucket/GitHub integration link the PR to the issue
+  const ref = ticket.source === "jira" ? ticket.sourceRef : undefined;
+  const prefix = ref && !title.toUpperCase().includes(ref.toUpperCase()) ? `${ref}: ` : "";
+  return (prefix + title).slice(0, 120);
 }
 
 function stageHeading(stage: StageSpec, role: RoleConfig | undefined): string {

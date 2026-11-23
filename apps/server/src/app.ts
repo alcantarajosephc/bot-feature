@@ -8,6 +8,7 @@ import { checkClaudeCli, ManualTicketSource, type BusEvent, type RoleConfig } fr
 import { exec } from "../../../packages/core/src/util/exec.ts";
 import type { Runtime } from "./runtime.ts";
 import { REPO_ROOT } from "./runtime.ts";
+import { SECRET_KEYS } from "./settings.ts";
 
 const WEB_DIST = path.join(REPO_ROOT, "apps", "web", "dist");
 const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
@@ -93,7 +94,7 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
 
   app.post("/api/tickets", async (req, reply) => {
     const parsed = ticketBody.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: "A ticket needs a title (max 200 characters) or a GitHub issue." });
+    if (!parsed.success) return reply.code(400).send({ error: "A ticket needs a title (max 200 characters) or an issue (GitHub or Jira)." });
     const repoPath = parsed.data.repoPath?.trim() || rt.getSettings().targetRepo;
     if (!repoPath) return reply.code(400).send({ error: "Pick a target project folder in Settings first." });
     let input;
@@ -185,23 +186,28 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
     }
   });
 
+  const secretValue = z.string().max(2000).nullable().optional();
   app.put("/api/secrets", async (req, reply) => {
-    const body = z.object({ anthropicApiKey: z.string().max(500).nullable().optional() }).safeParse(req.body);
+    const body = z.object({ anthropicApiKey: secretValue, bitbucketToken: secretValue, jiraToken: secretValue }).strict().safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "Invalid secrets payload." });
-    if (body.data.anthropicApiKey !== undefined) rt.secrets.set("anthropicApiKey", body.data.anthropicApiKey?.trim() || null);
+    for (const k of SECRET_KEYS) {
+      const v = body.data[k];
+      if (v !== undefined) rt.secrets.set(k, v?.trim() || null);
+    }
     return { secrets: rt.secrets.status() };
   });
 
   app.get("/api/checks", async () => {
     const s = rt.getSettings();
-    const [claude, repo, gh] = await Promise.all([
+    const [claude, repo, gh, atlassian] = await Promise.all([
       checkClaudeCli().then(({ installed, version, loggedIn, authMethod, subscriptionType, error }) => ({ installed, version, loggedIn, authMethod, subscriptionType, error })),
       s.targetRepo ? rt.git.inspectRepo(s.targetRepo) : Promise.resolve({ ok: false, isGitHub: false, error: "No target project selected." }),
       exec("gh", ["auth", "status"], { timeoutMs: 20_000 })
         .then((r) => ({ installed: true, loggedIn: r.code === 0 }))
         .catch(() => ({ installed: false, loggedIn: false })),
+      rt.checkAtlassian(),
     ]);
-    return { claude, repo, gh };
+    return { claude, repo, gh, ...atlassian };
   });
 
   app.get("/ws", { websocket: true }, (socket) => {
