@@ -36,6 +36,7 @@ export interface AppSettings {
   usageLimitRetryMinutes: number;
   testCommand: string;
   installDeps: boolean;
+  installCommand: string;
   productBrief: string;
   maxIdeas: number;
   ideasPerRound: number;

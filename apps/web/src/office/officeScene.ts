@@ -77,6 +77,7 @@ export class OfficeScene {
   private hover?: string;
   private selected?: string;
   private boardText = "";
+  private backlog: { title: string; color: string }[] = [];
   private readonly canvas: HTMLCanvasElement;
   private readonly onPick: (roleId: string) => void;
 
@@ -98,6 +99,15 @@ export class OfficeScene {
         this.agents.set(v.role.id, { id: v.role.id, x: d.x + 0.4, y: d.y - 0.8, tx: d.x + 0.4, ty: d.y - 0.8, wait: Math.random() * 3, frameT: 0, flip: false, seated: true });
       }
     });
+  }
+
+  /** Queued tickets, shown as sticky notes on the backlog board. */
+  setBacklog(items: { title: string; color: string }[]): void {
+    this.backlog = items;
+  }
+
+  backlogCount(): number {
+    return this.backlog.length;
   }
 
   start(): void {
@@ -229,6 +239,7 @@ export class OfficeScene {
     // crisp text layer
     c.setTransform(1, 0, 0, 1, 0, 0);
     this.drawBoard();
+    this.drawBacklogLabel();
     this.views.forEach((v, i) => this.drawLabels(v, i));
   }
 
@@ -264,6 +275,7 @@ export class OfficeScene {
       const my = (p[1] + q[1]) / 2;
       c.fillRect(Math.round(mx), Math.round(my - 34), 1, 20);
     }
+    this.drawBacklogBoard();
     // whiteboard on the left-back wall
     const [w0, w1] = [iso(0, 3), iso(0, 8)];
     this.poly([[w0[0], w0[1] - 36], [w1[0], w1[1] - 36], [w1[0], w1[1] - 14], [w0[0], w0[1] - 14]], "#f1f5f9");
@@ -424,6 +436,46 @@ export class OfficeScene {
     c.textAlign = "left";
     c.textBaseline = "middle";
     c.fillText(text, bx + 7 * dpr, by + th / 2 + 1);
+  }
+
+  /** Cork board between the first two windows; one sticky note per queued ticket (up to 6). */
+  private drawBacklogBoard(): void {
+    const x0 = 4.25;
+    const x1 = 5.75;
+    const [a, b] = [iso(x0, 0), iso(x1, 0)];
+    const top = 36;
+    const bottom = 12;
+    this.poly([[a[0], a[1] - top - 1], [b[0], b[1] - top - 1], [b[0], b[1] - bottom + 1], [a[0], a[1] - bottom + 1]], "#78350f");
+    this.poly([[a[0], a[1] - top], [b[0], b[1] - top], [b[0], b[1] - bottom], [a[0], a[1] - bottom]], "#b45309");
+    this.backlog.slice(0, 6).forEach((n, k) => {
+      const col = k % 3;
+      const row = Math.floor(k / 3);
+      const nx = x0 + 0.12 + col * 0.46;
+      const [p, q] = [iso(nx, 0), iso(nx + 0.34, 0)];
+      const h = top - 3 - row * 11;
+      this.poly([[p[0], p[1] - h], [q[0], q[1] - h], [q[0], q[1] - h + 8], [p[0], p[1] - h + 8]], n.color);
+      this.ctx.fillStyle = "rgba(15,23,42,0.45)";
+      this.ctx.fillRect(Math.round(p[0] + 1), Math.round(p[1] - h + 3), 3, 1);
+    });
+  }
+
+  /** "Up next: N" over the backlog board, in the crisp text layer. */
+  private drawBacklogLabel(): void {
+    const c = this.ctx;
+    const dpr = window.devicePixelRatio || 1;
+    const [bx, by] = iso(5, 0);
+    const x = this.offX + bx * this.scale;
+    const y = this.offY + (by - 41) * this.scale;
+    const n = this.backlog.length;
+    const label = n ? `Up next: ${n}` : "Backlog clear";
+    c.font = `bold ${Math.round(10 * dpr)}px ui-sans-serif, system-ui, sans-serif`;
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    const w = c.measureText(label).width + 12 * dpr;
+    c.fillStyle = "rgba(15,23,42,0.8)";
+    c.fillRect(x - w / 2, y - 8 * dpr, w, 16 * dpr);
+    c.fillStyle = n ? "#fcd34d" : "#94a3b8";
+    c.fillText(label, x, y + 1);
   }
 
   /** Current ticket title on the whiteboard. */

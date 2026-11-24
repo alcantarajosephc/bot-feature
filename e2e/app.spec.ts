@@ -220,3 +220,37 @@ test("research loop: CEO/PM/CTO propose ideas until they run dry; nothing is bui
   await expect(page.getByTestId("ticket-detail")).toContainText(title);
   await expect(page.getByTestId("ticket-status")).toHaveText(/PR ready/, { timeout: 45_000 });
 });
+
+test("office backlog: what's being worked on, the queue in order, ideas waiting, and removing from the queue", async ({ page }) => {
+  await page.goto("/office");
+  const backlog = page.getByTestId("backlog");
+  await expect(backlog).toBeVisible();
+  // the research test above left 4 ideas waiting for review
+  await expect(backlog.getByTestId("backlog-ideas")).toContainText("4 ideas waiting for review");
+
+  await page.evaluate(async () => {
+    for (const title of ["Backlog A", "Backlog B", "Backlog C"]) {
+      await fetch("/api/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+    }
+  });
+  await expect(backlog.getByTestId("backlog-now")).toContainText("Backlog A");
+  const next = backlog.getByTestId("backlog-next").getByTestId("backlog-item");
+  await expect(next).toHaveCount(2);
+  await expect(next.nth(0)).toContainText("#1");
+  await expect(next.nth(0)).toContainText("Backlog B");
+  await expect(next.nth(1)).toContainText("#2");
+  await expect(next.nth(1)).toContainText("Backlog C");
+  // the board on the office wall shows the same queue
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __office: { backlogCount(): number } }).__office.backlogCount())).toBe(2);
+
+  await next.nth(1).getByRole("button", { name: "Remove" }).click();
+  await expect(next).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __office: { backlogCount(): number } }).__office.backlogCount())).toBe(1);
+
+  // clicking an item makes it the current ticket
+  await next.nth(0).getByRole("button", { name: /Backlog B/ }).click();
+  await expect(page.getByTestId("toolbar").getByTestId("ticket-status")).toHaveText(/Queued|Running/);
+
+  await expect(backlog.getByTestId("backlog-next")).toContainText("Nothing queued", { timeout: 60_000 });
+  await expect(backlog.getByTestId("backlog-now")).toContainText("The team is free", { timeout: 60_000 });
+});

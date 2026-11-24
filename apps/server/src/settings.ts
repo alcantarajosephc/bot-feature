@@ -49,6 +49,7 @@ export const appSettingsSchema = z.object({
   usageLimitRetryMinutes: z.number().int().min(1).max(600),
   testCommand: z.string().max(300),
   installDeps: z.boolean(),
+  installCommand: z.string().max(300),
   /** Research loop: who the product is for, how it makes money, goals, off-limits areas. */
   productBrief: z.string().max(10_000),
   maxIdeas: z.number().int().min(1).max(50),
@@ -90,6 +91,7 @@ export function teamSettingsOf(s: AppSettings): TeamSettings {
     usageLimitRetryMinutes: s.usageLimitRetryMinutes,
     testCommand: s.testCommand,
     installDeps: s.installDeps,
+    installCommand: s.installCommand,
     workspaceRepos: s.workspaceRepos,
     repoTestCommands: s.repoTestCommands,
     baseBranch: s.baseBranch,

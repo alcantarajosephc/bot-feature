@@ -307,6 +307,10 @@ export function SettingsPage() {
         <label className="inline">
           <input type="checkbox" checked={s.installDeps} onChange={(e) => up({ installDeps: e.target.checked })} /> Install the project's existing dependencies in each new worktree
         </label>
+        <label>
+          Install command (empty = <code>npm ci</code> with a lockfile, else <code>npm install</code>). Dev runs it in the background while the planning roles start.
+          <input value={s.installCommand} onChange={(e) => up({ installCommand: e.target.value })} placeholder="npm ci" aria-label="Install command" disabled={!s.installDeps} />
+        </label>
       </section>
 
       <section className="card">

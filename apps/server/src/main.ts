@@ -24,9 +24,13 @@ rt.team.resumeUnfinished();
 await app.listen({ host: "127.0.0.1", port });
 console.log(`Role-bot team running at http://localhost:${port}  (data: ${dataDir}, provider: ${rt.getSettings().provider})`);
 
+let stopping = false;
 const shutdown = async () => {
-  await app.close();
+  if (stopping) process.exit(1); // second Ctrl+C: quit right away
+  stopping = true;
+  console.log("Stopping… running tickets will continue from the same stage next time you start the app.");
   await rt.close();
+  await app.close();
   process.exit(0);
 };
 process.on("SIGINT", shutdown);

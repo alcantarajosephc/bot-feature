@@ -233,7 +233,8 @@ export function createRuntime(o: RuntimeOptions): Runtime {
     async close() {
       lab.stop();
       await lab.waitUntilIdle();
-      await team.stop();
+      // interrupt, don't cancel: running tickets continue from the same stage on the next start
+      await team.shutdown();
       store.close();
     },
   };
