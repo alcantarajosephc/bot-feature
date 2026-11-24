@@ -44,6 +44,44 @@ Create both tokens in your Atlassian account's security settings. The Bitbucket 
 - `git push` uses your normal git credentials for bitbucket.org (for example Git Credential Manager).
 - **Address review comments** on Bitbucket trusts comments only from the PR's reviewers and from your own account. Bitbucket shows repository permissions only to admins, so reviewer status is what decides trust. Add the people whose comments should reach Dev as reviewers.
 - Jira issues aren't closed automatically. Move them in Jira, or use Jira automation on PR merge.
+- Branches for Jira tickets start with the key (`agents/PROJ-123-…`), and PR titles do too, so Jira's development panel links both.
+
+### A folder with several repos (frontend + backend)
+
+Point **Target project** at a plain folder whose sub-folders are git repos, for example:
+
+```
+Workspace\          ← not a git repo; may hold a CLAUDE.md that explains how the repos connect
+  web\              ← git repo (Bitbucket or GitHub)
+  server\           ← git repo
+```
+
+Settings then lists the repos it found. Untick any the bots shouldn't touch, and set per repo a **PR target branch** (e.g. `develop`; empty = the remote's default branch) and a test command (e.g. `./gradlew test`; it's also added to what Dev and QA may run).
+
+For each ticket:
+
+- Each selected repo gets its own worktree in one ticket folder (`data/worktrees/<ticket>/web`, `…/server`), all on the **same branch name**. The bots work from the ticket folder, so they see the repos side by side, the way you do in your editor.
+- Only repos that actually changed are pushed and get a PR. Every PR has the same title and a **Related pull requests** section linking the others, so reviewers merge them together.
+- The test gate runs in each changed repo; it passes only if all of them pass.
+- Each repo's branch starts from that repo's PR target branch, and its PR goes back into it.
+- Follow-ups read review comments from every PR, and **Update from main** merges each repo's own target branch.
+
+Your own checkouts are never touched: no files change and nothing is checked out in them. The only trace is the `agents/…` branch git keeps for each worktree.
+
+### Which branch PRs go to
+
+By default a ticket branches out from the remote's default branch (`origin/HEAD`) and its PR targets that branch. To use another one (say your team merges into `develop`), set **PR target branch** in Settings → Publishing, or per repo for a folder of several repos. The same branch is what the ticket starts from, what its PR targets and what **Update from main** merges, so the bots always build on the code the PR goes into. A branch that doesn't exist on `origin` stops the ticket with a clear error before any agent runs.
+
+### Your CLAUDE.md is used, never changed
+
+The bots run with Claude Code's settings turned off, so your personal hooks, MCP servers and permissions never reach them. That would also hide your project's instruction files, so the app reads them itself and gives them to every role:
+
+- `CLAUDE.md` (or `.claude/CLAUDE.md`; `AGENTS.md` when a folder has no CLAUDE.md) at each repo's root, as committed on the default branch;
+- the same files in the folders above the repo (or the workspace folder and above), up to but not including your home folder. That is how a cross-repo guide in the parent folder reaches the team.
+
+Files in sub-folders aren't preloaded; the bots are told to read them before changing code there. Nothing personal is read (no `~/.claude`, no `CLAUDE.local.md`).
+
+The bots can't edit any of this: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, `.cursor/`, `.vscode/`, `.idea/` and similar are write-protected for every role. If one is out of date, the bots say so in the PR instead.
 
 Try the UI without using any of your plan's usage:
 
@@ -97,7 +135,7 @@ Keep working on the same ticket instead of creating a new one. Click **Follow up
 |---|---|
 | **Request a change** | Your text goes to Dev; then QA, Security (diff), Docs and the test gate run again |
 | **Address review comments** | New PR comments from people with write access (reviews, conversation, inline code comments) go to Dev. Comments from anyone else are ignored |
-| **Update from main / fix conflicts** | The latest default branch is merged in (never rebased, never force-pushed). Clean merge: only QA + test gate. Conflicts: Dev resolves them, the app checks no conflict markers remain, then QA + Security |
+| **Update from main / fix conflicts** | The latest PR target branch (the default branch unless set in Settings) is merged in (never rebased, never force-pushed). Clean merge: only QA + test gate. Conflicts: Dev resolves them, the app checks no conflict markers remain, then QA + Security |
 
 Each follow-up pushes new commits to the **same branch and PR**, adds a "Revisions" section to the PR description, and shows up as **Revision N** on the ticket with its own role outputs. CEO, PM, Designer and CTO don't run again, so a follow-up uses roughly a third of a full run.
 
@@ -142,6 +180,7 @@ Each follow-up pushes new commits to the **same branch and PR**, adds a "Revisio
 | Touching your checkout or main | Per-ticket worktree outside your repo; writes outside it are blocked; only `agents/*` branches are ever pushed; there is no merge code path |
 | Dangerous commands | Per-role allowlist (`*` = any arguments); no `; & \| < > $ ( )`; `git push`, `gh` and branch changes are always blocked; installs must use `--ignore-scripts` |
 | Prompt injection via ticket or repo | No web tools; read-only roles; secrets (`ANTHROPIC_*`, `GH_TOKEN`, cloud creds) stripped from agent env; user/project Claude settings and MCP servers not loaded; human review of the PR |
+| Changing the developers' own AI/editor setup | `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.vscode/` and similar are write-protected for every role; they're only read, as guidance |
 | Runaway work | Max turns per role, max fix-up rounds, time limit per ticket |
 | Bad output | JSON schema enforced; one repair attempt, then the stage errors |
 | Lost work | Every run's prompt, output and full transcript saved; pipeline state saved after each stage and resumed after a restart |

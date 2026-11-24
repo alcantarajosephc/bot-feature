@@ -26,6 +26,19 @@ export function parseRemote(remoteUrl: string): { host: GitHost; repo?: string }
   return { host: m[1]!.toLowerCase() === "github.com" ? "github" : "bitbucket", repo: m[2] };
 }
 
+export interface WorkspaceInfo {
+  ok: boolean;
+  error?: string;
+  /** "repo": the folder is (inside) one git repo. "workspace": a plain folder holding several repos. */
+  kind: "repo" | "workspace";
+  /** Set for kind "repo". */
+  repo?: RepoInfo;
+  /** Set for kind "workspace": the absolute folder. */
+  root?: string;
+  /** Set for kind "workspace": every git repo directly inside the folder (repos without an origin have ok: false). */
+  repos?: (RepoInfo & { name: string })[];
+}
+
 export interface Worktree {
   path: string;
   branch: string;
@@ -84,15 +97,41 @@ export class GitService {
     return { ok: true, root: path.resolve(root), remoteUrl, host: remote.host, repo: remote.repo, isGitHub, githubRepo: isGitHub ? remote.repo : undefined, defaultBranch };
   }
 
-  async createWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; defaultBranch: string }): Promise<Worktree> {
+  /**
+   * A target folder is either a git repo (or a folder inside one), or a workspace: a plain folder whose
+   * direct sub-folders are git repos (e.g. a frontend and a backend repo side by side).
+   */
+  async inspectWorkspace(dir: string): Promise<WorkspaceInfo> {
+    if (!dir || !fs.existsSync(dir)) return { ok: false, kind: "repo", error: `Not a git repository: ${dir} does not exist.` };
+    if (await this.tryGit(dir, ["rev-parse", "--show-toplevel"])) {
+      const repo = await this.inspectRepo(dir);
+      return repo.ok ? { ok: true, kind: "repo", repo } : { ok: false, kind: "repo", repo, error: repo.error };
+    }
+    const names = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith(".") && fs.existsSync(path.join(dir, d.name, ".git")))
+      .map((d) => d.name)
+      .sort((a, b) => a.localeCompare(b));
+    const repos = await Promise.all(names.map(async (name) => ({ name, ...(await this.inspectRepo(path.join(dir, name))) })));
+    if (!repos.length) return { ok: false, kind: "workspace", repos, error: `Not a git repository, and none of its sub-folders is one: ${dir}` };
+    if (!repos.some((r) => r.ok)) return { ok: false, kind: "workspace", repos, error: "None of the git repositories in this folder has an 'origin' remote." };
+    return { ok: true, kind: "workspace", root: path.resolve(dir), repos };
+  }
+
+  async createWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; defaultBranch: string; path?: string }): Promise<Worktree> {
     return this.withLock(o.repoPath, async () => {
       await this.tryGit(o.repoPath, ["fetch", "origin", o.defaultBranch], 90_000);
       const remoteRef = `refs/remotes/origin/${o.defaultBranch}`;
-      const baseRef = (await this.tryGit(o.repoPath, ["rev-parse", "--verify", "--quiet", remoteRef])) ? remoteRef : o.defaultBranch;
+      const baseRef = (await this.tryGit(o.repoPath, ["rev-parse", "--verify", "--quiet", remoteRef]))
+        ? remoteRef
+        : (await this.tryGit(o.repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${o.defaultBranch}`]))
+          ? `refs/heads/${o.defaultBranch}`
+          : undefined;
+      if (!baseRef) throw new Error(`Branch '${o.defaultBranch}' was not found on origin in ${o.repoPath}. Check the PR target branch in Settings.`);
       const baseSha = await this.git(o.repoPath, ["rev-parse", baseRef]);
       const branch = `${BRANCH_PREFIX}${o.slug}-${o.ticketId}`;
-      fs.mkdirSync(o.worktreesDir, { recursive: true });
-      const wtPath = path.join(o.worktreesDir, `${o.slug.slice(0, 24)}-${o.ticketId}`);
+      const wtPath = o.path ?? path.join(o.worktreesDir, `${o.slug.slice(0, 24)}-${o.ticketId}`);
+      fs.mkdirSync(path.dirname(wtPath), { recursive: true });
       await this.git(o.repoPath, ["worktree", "add", "-b", branch, wtPath, baseSha]);
       return { path: wtPath, branch, baseSha };
     });
@@ -118,11 +157,11 @@ export class GitService {
   }
 
   /** Re-creates a ticket's worktree from its existing branch (e.g. after it was cleaned up). */
-  async attachWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; branch: string }): Promise<string> {
+  async attachWorktree(o: { repoPath: string; worktreesDir: string; ticketId: string; slug: string; branch: string; path?: string }): Promise<string> {
     return this.withLock(o.repoPath, async () => {
-      fs.mkdirSync(o.worktreesDir, { recursive: true });
       await this.tryGit(o.repoPath, ["worktree", "prune"]);
-      const wtPath = path.join(o.worktreesDir, `${o.slug.slice(0, 24)}-${o.ticketId}`);
+      const wtPath = o.path ?? path.join(o.worktreesDir, `${o.slug.slice(0, 24)}-${o.ticketId}`);
+      fs.mkdirSync(path.dirname(wtPath), { recursive: true });
       await this.git(o.repoPath, ["worktree", "add", wtPath, o.branch]);
       return wtPath;
     });

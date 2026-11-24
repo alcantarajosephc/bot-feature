@@ -62,7 +62,26 @@ export function commandsFor(profile: CommandProfile, project: ProjectInfo, extra
   }
 }
 
-export const DOCS_GLOBS = ["README*", "**/README*", "docs/**", "CHANGELOG*", "**/CHANGELOG*"];
+/**
+ * The developers' own AI-assistant and editor setup. Role Bots reads the instruction files as guidance
+ * but never changes any of these, so working with the bots can't disturb anyone's local workflow.
+ */
+export const PROTECTED_GLOBS = [
+  "**/CLAUDE.md",
+  "**/CLAUDE.local.md",
+  "**/AGENTS.md",
+  "**/.claude/**",
+  "**/.mcp.json",
+  "**/.cursor/**",
+  "**/.cursorrules",
+  "**/.windsurfrules",
+  "**/.agent/**",
+  "**/.github/copilot-instructions.md",
+  "**/.vscode/**",
+  "**/.idea/**",
+];
+
+export const DOCS_GLOBS =["README*", "**/README*", "docs/**", "CHANGELOG*", "**/CHANGELOG*"];
 
 export function toolsFor(access: AccessLevel, hasCommands: boolean): string[] {
   const tools = ["Read", "Glob", "Grep"];

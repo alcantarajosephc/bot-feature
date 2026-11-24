@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EventBus, type HandoffKind, type WorkerSnapshot } from "../bus/eventBus.ts";
-import { GitService } from "../git/gitService.ts";
+import { GitService, type WorkspaceInfo } from "../git/gitService.ts";
 import { buildFailureReport, buildPrBody, buildPrTitle, type Feedback } from "../pr/prBuilder.ts";
 import type { PrPublisher } from "../pr/publishers.ts";
 import type { AgentProvider, AgentRunRequest, AgentRunResult } from "../providers/types.ts";
@@ -10,12 +10,13 @@ import { parseRoleOutput } from "../roles/parseOutput.ts";
 import { renderOutput } from "../roles/render.ts";
 import { jsonSchemaFor, schemasByKind } from "../roles/schemas.ts";
 import type { Store } from "../store/store.ts";
-import { addUsage, emptyUsage, FINAL_STATUSES, type FollowUpKind, type LogKind, type RevisionInfo, type StageRun, type Ticket, type TicketInput, type Usage } from "../types.ts";
+import { addUsage, emptyUsage, FINAL_STATUSES, type FollowUpKind, type LogKind, type RevisionInfo, type StageRun, type Ticket, type TicketInput, type TicketRepo, type Usage } from "../types.ts";
 import type { ReviewSource } from "../tickets/github.ts";
 import { exec, tail } from "../util/exec.ts";
 import { RoleWorker } from "../workers/roleWorker.ts";
 import { evaluateGate } from "./gates.ts";
-import { allDependencies, commandsFor, dependencyChanges, detectProject, readPackageJson, toolsFor, writeScopeFor } from "./project.ts";
+import { guidelineSources, renderGuidelines } from "./guidelines.ts";
+import { allDependencies, commandsFor, dependencyChanges, detectProject, PROTECTED_GLOBS, readPackageJson, toolsFor, writeScopeFor, type ProjectInfo } from "./project.ts";
 import { buildRepairPrompt, buildSystemPrompt, buildUserPrompt } from "./prompts.ts";
 
 export const ORCHESTRATOR = "orchestrator";
@@ -35,6 +36,16 @@ export interface TeamSettings {
   testCommand: string;
   /** Install the project's existing dependencies in a fresh worktree. */
   installDeps: boolean;
+  /** Workspace folders with several repos: the repos (folder names) tickets may change. Empty = all of them. */
+  workspaceRepos: string[];
+  /** Workspace folders with several repos: test command per repo folder name (empty = detected from package.json). */
+  repoTestCommands: Record<string, string>;
+  /**
+   * Branch new tickets start from, PRs target and "update from main" merges (empty = the remote's default branch).
+   * For a folder with several repos, `repoBaseBranches` (per repo folder name) is used instead.
+   */
+  baseBranch: string;
+  repoBaseBranches: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: TeamSettings = {
@@ -45,6 +56,10 @@ export const DEFAULT_SETTINGS: TeamSettings = {
   usageLimitRetryMinutes: 30,
   testCommand: "",
   installDeps: true,
+  workspaceRepos: [],
+  repoTestCommands: {},
+  baseBranch: "",
+  repoBaseBranches: {},
 };
 
 export interface TeamOptions {
@@ -108,6 +123,45 @@ interface Ctx {
   state: RunState;
   signal: AbortSignal;
   deadline: number;
+  /** The project's own CLAUDE.md / AGENTS.md, read once per run (see guidelines.ts). */
+  guidelines: string;
+}
+
+/** One repository a ticket works in: the only one for a normal ticket, one of several in a workspace. */
+interface Unit {
+  /** Folder name in the workspace; "" for a single-repo ticket. */
+  name: string;
+  dir: string;
+  repoPath: string;
+  branch: string;
+  baseSha: string;
+  defaultBranch: string;
+  prUrl?: string;
+}
+
+function unitsOf(t: Ticket): Unit[] {
+  if (t.repos?.length) {
+    return t.repos.map((r) => ({ name: r.name, dir: r.worktree, repoPath: r.repoPath, branch: r.branch, baseSha: r.baseSha, defaultBranch: r.defaultBranch, prUrl: r.prUrl }));
+  }
+  return [{ name: "", dir: t.worktree!, repoPath: t.repoPath, branch: t.branch!, baseSha: t.baseSha!, defaultBranch: t.defaultBranch!, prUrl: t.prUrl }];
+}
+
+/** A path as the agents see it from the ticket's working directory. */
+function inUnit(u: Unit, file: string): string {
+  return u.name ? `${u.name}/${file}` : file;
+}
+
+/** The entries of a workspace-relative path list that belong to this unit, relative to the unit. */
+function filesOfUnit(u: Unit, files: string[]): string[] {
+  if (!u.name) return files;
+  const p = u.name + "/";
+  return files.filter((f) => f.startsWith(p)).map((f) => f.slice(p.length));
+}
+
+/** Branch-name part: the Jira key first (so Jira links the branch to the issue), then the title. */
+function branchSlug(t: Ticket): string {
+  const key = t.source === "jira" && t.sourceRef && /^[A-Z][A-Z0-9_]*-\d+$/i.test(t.sourceRef) ? t.sourceRef.toUpperCase() : "";
+  return key ? `${key}-${slugify(t.title)}`.replace(/-+$/g, "") : slugify(t.title);
 }
 
 export function slugify(s: string): string {
@@ -247,16 +301,23 @@ export class Team {
       if (!note) throw new Error("Describe the change you want.");
       request = note;
     } else if (req.kind === "review") {
-      if (!t.prUrl) throw new Error("This ticket has no PR on GitHub or Bitbucket (it was a dry run), so there are no review comments to read.");
-      if (!this.o.reviews) throw new Error("Reading review comments is not set up.");
-      const comments = await this.o.reviews.fetch(t.prUrl, t.lastPublishedAt);
+      const prs = t.repos?.length ? t.repos.filter((r) => r.prUrl).map((r) => ({ name: r.name, url: r.prUrl! })) : t.prUrl ? [{ name: "", url: t.prUrl }] : [];
+      if (!prs.length) throw new Error("This ticket has no PR on GitHub or Bitbucket (it was a dry run), so there are no review comments to read.");
+      const reviews = this.o.reviews;
+      if (!reviews) throw new Error("Reading review comments is not set up.");
+      const comments = (await Promise.all(prs.map(async (pr) => (await reviews.fetch(pr.url, t.lastPublishedAt)).map((c) => ({ ...c, repo: pr.name }))))).flat();
       if (!comments.length) throw new Error("No new review comments from people with write access since the PR was last updated.");
+      const where = (c: (typeof comments)[number]) => {
+        const at = c.path ? (c.repo ? `${c.repo}/${c.path}` : c.path) + (c.line ? `:${c.line}` : "") : c.repo ? `${c.repo} PR` : "";
+        return at ? `(${at}) ` : "";
+      };
       request =
         "Address these PR review comments:\n" +
-        comments.map((c) => `- ${c.path ? `(${c.path}${c.line ? `:${c.line}` : ""}) ` : ""}@${c.author}: ${c.body.replace(/\r?\n/g, "\n  ")}`).join("\n") +
+        comments.map((c) => `- ${where(c)}@${c.author}: ${c.body.replace(/\r?\n/g, "\n  ")}`).join("\n") +
         (note ? `\n\nAlso: ${note}` : "");
     } else {
-      request = `Bring the branch up to date with ${t.defaultBranch ?? "the default branch"} and fix any merge conflicts.${note ? `\n\n${note}` : ""}`;
+      const target = t.repos?.length ? "each repository's default branch" : (t.defaultBranch ?? "the default branch");
+      request = `Bring the branch up to date with ${target} and fix any merge conflicts.${note ? `\n\n${note}` : ""}`;
     }
 
     const state = this.o.store.loadState<RunState>(id) ?? this.initialState();
@@ -280,7 +341,7 @@ export class Team {
     const info: RevisionInfo = { n, kind: req.kind, request, status: "running", startedAt: Date.now() };
     const next: Ticket = { ...t, status: "queued", error: undefined, report: undefined, revisions: [...(t.revisions ?? []), info], updatedAt: Date.now() };
     this.saveAndEmit(next);
-    this.log(id, "info", `Follow-up ${n} received (${req.kind === "change" ? "change request" : req.kind === "review" ? "review comments" : `update from ${t.defaultBranch}`}).`);
+    this.log(id, "info", `Follow-up ${n} received (${req.kind === "change" ? "change request" : req.kind === "review" ? "review comments" : `update from ${t.repos?.length ? "the default branches" : t.defaultBranch}`}).`);
     this.queue.push(id);
     this.pump();
     return next;
@@ -308,11 +369,17 @@ export class Team {
     const rev = ctx.state.revision;
     if (!rev || rev.kind !== "update" || rev.mergeDone) return;
     const t = ctx.ticket;
-    this.log(t.id, "info", `Merging the latest ${t.defaultBranch} into ${t.branch}`);
-    const r = await this.git.mergeDefault(t.worktree!, t.defaultBranch!);
+    const conflicts: string[] = [];
+    for (const u of unitsOf(t)) {
+      this.log(t.id, "info", `Merging the latest ${u.defaultBranch} into ${u.branch}${u.name ? ` (${u.name})` : ""}`);
+      const m = await this.git.mergeDefault(u.dir, u.defaultBranch);
+      // diffs and reviews now compare against the new default branch, so they show only this ticket's changes
+      this.patchUnit(ctx, u, { baseSha: m.target });
+      conflicts.push(...m.conflicts.map((f) => inUnit(u, f)));
+    }
     rev.mergeDone = true;
-    // diffs and reviews now compare against the new default branch, so they show only this ticket's changes
-    ctx.update({ baseSha: r.target });
+    const r = { conflicts };
+    const def = t.repos?.length ? "default branch" : t.defaultBranch;
     const all = this.revisionStages();
     if (r.conflicts.length) {
       rev.conflicts = r.conflicts;
@@ -325,14 +392,14 @@ export class Team {
           round: rev.n,
           kind: "sendBack",
           text:
-            `Merging the latest \`${t.defaultBranch}\` into this branch caused merge conflicts in: ${r.conflicts.map((f) => `\`${f}\``).join(", ")}.\n` +
-            `Resolve every conflict: remove all \`<<<<<<<\`, \`=======\` and \`>>>>>>>\` markers and keep both this ticket's changes and the new changes from \`${t.defaultBranch}\`. Then run the tests. Do not commit; the orchestrator completes the merge.`,
+            `Merging the latest \`${def}\` into this branch caused merge conflicts in: ${r.conflicts.map((f) => `\`${f}\``).join(", ")}.\n` +
+            `Resolve every conflict: remove all \`<<<<<<<\`, \`=======\` and \`>>>>>>>\` markers and keep both this ticket's changes and the new changes from \`${def}\`. Then run the tests. Do not commit; the orchestrator completes the merge.`,
         },
       ];
       this.log(t.id, "warn", `Merge conflicts in ${r.conflicts.join(", ")}: handing to Dev`);
     } else {
       rev.stages = all.filter((id) => this.kindOf(id) === "qa");
-      this.log(t.id, "info", `Merged ${t.defaultBranch} cleanly`);
+      this.log(t.id, "info", `Merged ${def} cleanly`);
     }
     this.o.store.saveState(t.id, ctx.state);
   }
@@ -450,11 +517,13 @@ export class Team {
       state: this.o.store.loadState<RunState>(id) ?? this.initialState(),
       signal,
       deadline: Date.now() + this.settings.maxTicketMinutes * 60_000,
+      guidelines: "",
     };
     try {
       ctx.update({ status: "running", resumeAt: undefined, error: undefined });
       if (ctx.state.revision) this.setRevision(ctx, { status: "running", endedAt: undefined });
       await this.prepareWorkspace(ctx);
+      ctx.guidelines = this.loadGuidelines(ctx);
       await this.mergeDefaultIfNeeded(ctx);
       await this.runStages(ctx);
       await this.publish(ctx);
@@ -475,7 +544,7 @@ export class Team {
           kind: e.kind,
         });
         if (e.kind === "rejected" && t.worktree) {
-          await this.git.removeWorktree(t.repoPath, t.worktree, { deleteBranch: t.branch }).catch(() => undefined);
+          await this.removeWorkspace(t);
           this.handoff(id, ctx.state.outputs.ceo ? "ceo" : "orchestrator", "", "reject");
         } else {
           this.handoff(id, t.stage ?? "orchestrator", "", "fail");
@@ -506,27 +575,130 @@ export class Team {
 
   private async prepareWorkspace(ctx: Ctx): Promise<void> {
     const t = ctx.ticket;
+    if (t.repos?.length) return this.reattachRepos(ctx);
     if (t.worktree && fs.existsSync(t.worktree)) return;
-    const info = await this.git.inspectRepo(t.repoPath);
+    let ws: WorkspaceInfo | undefined;
+    if (!t.branch) {
+      // a new ticket: the target is one repo, or a workspace folder holding several
+      ws = await this.git.inspectWorkspace(t.repoPath);
+      if (!ws.ok) throw new Error(ws.error);
+      if (ws.kind === "workspace") return this.createRepos(ctx, ws);
+    }
+    const info = ws?.repo ?? (await this.git.inspectRepo(t.repoPath));
     if (!info.ok) throw new Error(info.error);
     if (t.branch && t.baseSha) {
       // the ticket already has a branch (follow-up or retry after cleanup): check it out again
-      const wtPath = await this.git.attachWorktree({ repoPath: info.root!, worktreesDir: path.join(this.o.dataDir, "worktrees"), ticketId: t.id, slug: slugify(t.title), branch: t.branch });
+      const wtPath = await this.git.attachWorktree({ repoPath: info.root!, worktreesDir: path.join(this.o.dataDir, "worktrees"), ticketId: t.id, slug: branchSlug(t), branch: t.branch });
       ctx.update({ worktree: wtPath });
       this.log(t.id, "info", `Re-created the worktree for branch ${t.branch}`);
       await this.installDeps(ctx, wtPath);
       return;
     }
+    const base = this.settings.baseBranch || info.defaultBranch!;
     const wt = await this.git.createWorktree({
       repoPath: info.root!,
       worktreesDir: path.join(this.o.dataDir, "worktrees"),
       ticketId: t.id,
-      slug: slugify(t.title),
-      defaultBranch: info.defaultBranch!,
+      slug: branchSlug(t),
+      defaultBranch: base,
     });
-    ctx.update({ repoPath: info.root!, worktree: wt.path, branch: wt.branch, baseSha: wt.baseSha, defaultBranch: info.defaultBranch });
-    this.log(t.id, "info", `Created isolated worktree on branch ${wt.branch}`);
+    ctx.update({ repoPath: info.root!, worktree: wt.path, branch: wt.branch, baseSha: wt.baseSha, defaultBranch: base });
+    this.log(t.id, "info", `Created isolated worktree on branch ${wt.branch}, from ${base}`);
     await this.installDeps(ctx, wt.path);
+  }
+
+  /**
+   * A workspace ticket: one folder for the ticket with a worktree per repo inside it, all on the same
+   * branch name, so the agents see the repos side by side the way the developer does.
+   */
+  private async createRepos(ctx: Ctx, ws: WorkspaceInfo): Promise<void> {
+    const t = ctx.ticket;
+    const wanted = this.settings.workspaceRepos.map((n) => n.toLowerCase());
+    const picked = (ws.repos ?? []).filter((r) => !wanted.length || wanted.includes(r.name.toLowerCase()));
+    for (const r of picked) if (!r.ok) this.log(t.id, "warn", `Skipping ${r.name}: ${r.error}`);
+    const usable = picked.filter((r) => r.ok);
+    if (!usable.length) {
+      throw new Error(
+        wanted.length
+          ? `None of the selected repositories (${this.settings.workspaceRepos.join(", ")}) is in ${ws.root} with an 'origin' remote.`
+          : `No repository in ${ws.root} has an 'origin' remote.`,
+      );
+    }
+    const worktreesDir = path.join(this.o.dataDir, "worktrees");
+    const slug = branchSlug(t);
+    const folder = path.join(worktreesDir, `${slug.slice(0, 24)}-${t.id}`);
+    const repos: TicketRepo[] = [];
+    try {
+      for (const r of usable) {
+        const base = this.settings.repoBaseBranches[r.name] || r.defaultBranch!;
+        const wt = await this.git.createWorktree({ repoPath: r.root!, worktreesDir, ticketId: t.id, slug, defaultBranch: base, path: path.join(folder, r.name) });
+        repos.push({ name: r.name, repoPath: r.root!, worktree: wt.path, branch: wt.branch, baseSha: wt.baseSha, defaultBranch: base });
+      }
+    } catch (e) {
+      for (const r of repos) await this.git.removeWorktree(r.repoPath, r.worktree, { deleteBranch: r.branch }).catch(() => undefined);
+      fs.rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      throw e;
+    }
+    ctx.update({ repoPath: ws.root!, worktree: folder, branch: repos[0]!.branch, repos });
+    this.log(t.id, "info", `Created isolated worktrees on branch ${repos[0]!.branch}: ${repos.map((r) => `${r.name} from ${r.defaultBranch}`).join(", ")}`);
+    for (const r of repos) await this.installDeps(ctx, r.worktree);
+  }
+
+  /** Follow-up or retry of a workspace ticket whose worktrees were cleaned up: check the branches out again. */
+  private async reattachRepos(ctx: Ctx): Promise<void> {
+    const t = ctx.ticket;
+    for (const r of t.repos!) {
+      if (fs.existsSync(r.worktree)) continue;
+      await this.git.attachWorktree({ repoPath: r.repoPath, worktreesDir: path.join(this.o.dataDir, "worktrees"), ticketId: t.id, slug: branchSlug(t), branch: r.branch, path: r.worktree });
+      this.log(t.id, "info", `Re-created the worktree for ${r.name} (branch ${r.branch})`);
+      await this.installDeps(ctx, r.worktree);
+    }
+  }
+
+  private async removeWorkspace(t: Ticket): Promise<void> {
+    if (!t.repos?.length) {
+      await this.git.removeWorktree(t.repoPath, t.worktree!, { deleteBranch: t.branch }).catch(() => undefined);
+      return;
+    }
+    for (const r of t.repos) await this.git.removeWorktree(r.repoPath, r.worktree, { deleteBranch: r.branch }).catch(() => undefined);
+    fs.rmSync(t.worktree!, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+
+  /** Updates one repo's fields (the top-level fields for a single-repo ticket). */
+  private patchUnit(ctx: Ctx, u: Unit, patch: { baseSha?: string; prUrl?: string }): void {
+    const repos = ctx.ticket.repos;
+    if (!repos?.length) return ctx.update(patch);
+    ctx.update({ repos: repos.map((r) => (r.name === u.name ? { ...r, ...patch } : r)) });
+  }
+
+  private loadGuidelines(ctx: Ctx): string {
+    const t = ctx.ticket;
+    const multi = !!t.repos?.length;
+    const sources = guidelineSources({ outside: t.repoPath, includeOutside: multi, repos: unitsOf(t).map((u) => ({ name: u.name, dir: u.dir })) });
+    if (sources.length) this.log(t.id, "info", `Project guidelines for the team (read only): ${sources.map((s) => s.label.replace(/ \(.*\)$/, "")).join(", ")}`);
+    return renderGuidelines(sources, { multiRepo: multi });
+  }
+
+  /** Workspace-relative changed files across the ticket's repos. */
+  private async changedFiles(t: Ticket): Promise<string[]> {
+    const out: string[] = [];
+    for (const u of unitsOf(t)) out.push(...(await this.git.changedFiles(u.dir, u.baseSha)).map((f) => inUnit(u, f)));
+    return out;
+  }
+
+  private async diffStat(t: Ticket): Promise<string> {
+    if (!t.repos?.length) return this.git.diffStat(t.worktree!, t.baseSha!);
+    const parts: string[] = [];
+    for (const u of unitsOf(t)) {
+      const stat = await this.git.diffStat(u.dir, u.baseSha);
+      if (stat) parts.push(`${u.name}:\n${stat}`);
+    }
+    return parts.join("\n\n");
+  }
+
+  /** Detected project facts per repo, with the configured test command. */
+  private projects(t: Ticket): { u: Unit; p: ProjectInfo }[] {
+    return unitsOf(t).map((u) => ({ u, p: detectProject(u.dir, { testCommand: u.name ? this.settings.repoTestCommands[u.name] : this.settings.testCommand }) }));
   }
 
   private async installDeps(ctx: Ctx, wtPath: string): Promise<void> {
@@ -563,8 +735,11 @@ export class Team {
       const stage = stages[s.index]!;
       const role = this.o.roles.find((r) => r.id === stage.role)!;
       const output = await this.runStage(ctx, stage, role);
-      if (role.kind === "dev" && s.revision?.conflicts.length && (await this.git.isMerging(ctx.ticket.worktree!))) {
-        const left = this.git.filesWithMarkers(ctx.ticket.worktree!, s.revision.conflicts);
+      if (role.kind === "dev" && s.revision?.conflicts.length) {
+        const left: string[] = [];
+        for (const u of unitsOf(ctx.ticket)) {
+          if (await this.git.isMerging(u.dir)) left.push(...this.git.filesWithMarkers(u.dir, filesOfUnit(u, s.revision.conflicts)).map((f) => inUnit(u, f)));
+        }
         if (left.length) {
           this.sendBack(ctx, this.o.pipeline.verifyCountsAs, "merge", stage.id, `Merge conflict markers are still present in: ${left.map((f) => `\`${f}\``).join(", ")}. Resolve every conflict and remove all markers.`);
           this.o.store.saveState(ctx.ticket.id, s);
@@ -573,8 +748,10 @@ export class Team {
       }
       if (stage.commitAfter) {
         const summary = String((output as { summary?: string }).summary ?? "").split(/\r?\n/)[0]!.slice(0, 60);
-        const sha = await this.git.commitAll(ctx.ticket.worktree!, `${role.title}: ${summary || stage.id}`);
-        if (sha) this.log(ctx.ticket.id, "info", `Committed ${role.title} changes (${sha.slice(0, 8)})`);
+        for (const u of unitsOf(ctx.ticket)) {
+          const sha = await this.git.commitAll(u.dir, `${role.title}: ${summary || stage.id}`);
+          if (sha) this.log(ctx.ticket.id, "info", `Committed ${role.title} changes${u.name ? ` in ${u.name}` : ""} (${sha.slice(0, 8)})`);
+        }
       }
       const gate = evaluateGate(role.kind, output);
       if (gate.type === "reject") throw new TicketFailure(gate.reason, "rejected");
@@ -644,17 +821,31 @@ export class Team {
       ctx.update({ stage: stage.id });
       const t = ctx.ticket;
       const wt = t.worktree!;
-      const project = detectProject(wt, { testCommand: this.settings.testCommand });
-      const commands = commandsFor(role.commands, project, this.settings.extraCommands);
+      const multi = !!t.repos?.length;
+      const projects = this.projects(t);
+      const merged: ProjectInfo = { scriptCommands: [...new Set(projects.flatMap((x) => x.p.scriptCommands))], dependencies: {} };
+      // in a workspace, QA and Dev may run each repo's configured test command
+      const repoTests = multi && (role.commands === "test" || role.commands === "dev") ? projects.map((x) => this.settings.repoTestCommands[x.u.name]).filter((c): c is string => !!c) : [];
+      const commands = [...new Set(commandsFor(role.commands, merged, [...this.settings.extraCommands, ...repoTests]))];
+      const testCommand = multi
+        ? projects
+            .filter((x) => x.p.testCommand)
+            .map((x) => `\`${x.u.name}\`: \`${x.p.testCommand}\``)
+            .join("; ") || undefined
+        : projects[0]!.p.testCommand;
       const schema = jsonSchemaFor(role.kind);
 
       const wantsDiff = role.kind === "qa" || role.kind === "docs" || (role.kind === "security" && stage.mode === "diff") || (role.kind === "dev" && round > 1);
-      const diffStat = wantsDiff ? await this.git.diffStat(wt, t.baseSha!) : undefined;
-      const changedFiles = wantsDiff ? await this.git.changedFiles(wt, t.baseSha!) : undefined;
+      const diffStat = wantsDiff ? await this.diffStat(t) : undefined;
+      const changedFiles = wantsDiff ? await this.changedFiles(t) : undefined;
       let depChanges: { name: string; from?: string; to: string }[] | undefined;
       if (role.kind === "security" && stage.mode === "diff") {
-        const basePkg = await this.git.readFileAt(wt, t.baseSha!, "package.json");
-        depChanges = dependencyChanges(allDependencies(basePkg ? JSON.parse(basePkg) : {}), allDependencies(readPackageJson(wt)));
+        depChanges = [];
+        for (const u of unitsOf(t)) {
+          const basePkg = await this.git.readFileAt(u.dir, u.baseSha, "package.json");
+          const changes = dependencyChanges(allDependencies(basePkg ? JSON.parse(basePkg) : {}), allDependencies(readPackageJson(u.dir)));
+          depChanges.push(...changes.map((d) => ({ ...d, name: u.name ? `${u.name}: ${d.name}` : d.name })));
+        }
       }
 
       const decisions: [string, string][] = this.o.pipeline.stages
@@ -673,7 +864,7 @@ export class Team {
         decisions,
         feedback: s.pending[stage.id] ?? [],
         commands,
-        testCommand: project.testCommand,
+        testCommand,
         diffStat,
         changedFiles,
         dependencyChanges: depChanges,
@@ -704,11 +895,11 @@ export class Team {
         round,
         model: this.settings.roleModels[role.id] || role.model,
         effort: role.effort,
-        systemPrompt: buildSystemPrompt(this.o.promptsDir, role),
+        systemPrompt: buildSystemPrompt(this.o.promptsDir, role, ctx.guidelines),
         prompt,
         cwd: wt,
         tools: toolsFor(role.access, commands.length > 0),
-        policy: { root: wt, write: writeScopeFor(role.access), commands },
+        policy: { root: wt, write: writeScopeFor(role.access), commands, protect: PROTECTED_GLOBS },
         maxTurns: role.maxTurns,
         jsonSchema: schema,
         transcriptPath: run.transcriptPath,
@@ -801,6 +992,7 @@ export class Team {
   }
 
   private async verify(ctx: Ctx): Promise<{ command: string; passed: boolean; output: string } | { skipped: string }> {
+    if (ctx.ticket.repos?.length) return this.verifyRepos(ctx);
     const wt = ctx.ticket.worktree!;
     const project = detectProject(wt, { testCommand: this.settings.testCommand });
     if (!project.testCommand) {
@@ -815,24 +1007,134 @@ export class Team {
     return { command: project.testCommand, passed, output: tail(r.stdout + "\n" + r.stderr, 3000) };
   }
 
+  /** Workspace tickets: runs the test command of every repo that changed; the gate passes only if all pass. */
+  private async verifyRepos(ctx: Ctx): Promise<{ command: string; passed: boolean; output: string } | { skipped: string }> {
+    const t = ctx.ticket;
+    const ran: string[] = [];
+    const missing: string[] = [];
+    const outputs: string[] = [];
+    let passed = true;
+    for (const { u, p } of this.projects(t)) {
+      if (!(await this.git.changedFiles(u.dir, u.baseSha)).length) continue;
+      if (!p.testCommand) {
+        missing.push(u.name);
+        continue;
+      }
+      this.log(t.id, "info", `Automated test gate: running \`${p.testCommand}\` in ${u.name}`);
+      const r = await exec(p.testCommand, [], { cwd: u.dir, shell: true, timeoutMs: 15 * 60_000, signal: ctx.signal, env: { ...process.env, CI: "1" } });
+      if (ctx.signal.aborted) throw new Cancelled();
+      const ok = r.code === 0 && !r.timedOut;
+      passed &&= ok;
+      ran.push(`${u.name}: ${p.testCommand}`);
+      outputs.push(`[${u.name}] ${ok ? "passed" : "FAILED"}\n${tail(r.stdout + "\n" + r.stderr, ok ? 300 : 2500)}`);
+    }
+    if (missing.length) this.log(t.id, "warn", `No test command for ${missing.join(", ")}; set one per repository in Settings.`);
+    if (!ran.length) {
+      return { skipped: missing.length ? `No test command for ${missing.join(", ")} (set one per repository in Settings).` : "No repository has changes to test yet." };
+    }
+    this.log(t.id, passed ? "info" : "warn", `Automated test gate ${passed ? "passed" : "failed"}.`);
+    return { command: ran.join(" · "), passed, output: tail(outputs.join("\n\n"), 3000) };
+  }
+
+  /** Marks a follow-up revision done, with a summary for the PR description. */
+  private finishRevision(ctx: Ctx): void {
+    const rev = ctx.state.revision;
+    if (!rev) return;
+    const t = ctx.ticket;
+    const def = t.repos?.length ? "default branch" : t.defaultBranch;
+    const devId = this.revisionStages()[0]!;
+    const devRan = rev.stages.includes(devId);
+    const devSummary = String((ctx.state.outputs[devId] as { summary?: string } | undefined)?.summary ?? "");
+    const summary =
+      rev.kind === "update"
+        ? rev.conflicts.length
+          ? `Merged the latest \`${def}\` and resolved conflicts in ${rev.conflicts.map((f) => `\`${f}\``).join(", ")}. ${devRan ? devSummary : ""}`.trim()
+          : `Merged the latest \`${def}\`; no conflicts.${devRan ? ` ${devSummary}` : ""}`
+        : devSummary || "Done.";
+    this.setRevision(ctx, { status: "done", endedAt: Date.now(), summary });
+  }
+
+  /**
+   * Workspace tickets: one PR per repo that changed, all on the same branch name and title (so a Jira key
+   * links every one of them to the issue), each listing the others under "Related pull requests".
+   */
+  private async publishRepos(ctx: Ctx): Promise<void> {
+    const t0 = ctx.ticket;
+    const changed: Unit[] = [];
+    const stats: Record<string, string> = {};
+    for (const u of unitsOf(t0)) {
+      if (!(await this.git.changedFiles(u.dir, u.baseSha)).length) continue;
+      changed.push(u);
+      stats[u.name] = await this.git.diffStat(u.dir, u.baseSha);
+    }
+    if (!changed.length) throw new TicketFailure("The developer made no changes, so there is nothing to open a PR for.");
+    ctx.update({ stage: "publish" });
+    this.finishRevision(ctx);
+    const rev = ctx.state.revision;
+    const t = ctx.ticket;
+    const title = buildPrTitle(t);
+    const urls: Record<string, string | undefined> = Object.fromEntries(changed.map((u) => [u.name, u.prUrl]));
+    const bodyFor = (u: Unit) =>
+      buildPrBody({
+        ticket: ctx.ticket,
+        roles: this.o.roles,
+        stages: this.o.pipeline.stages,
+        outputs: ctx.state.outputs,
+        history: ctx.state.history,
+        diffStat: stats[u.name],
+        verify: ctx.state.verify,
+        repo: { name: u.name, related: changed.filter((o) => o !== u).map((o) => ({ name: o.name, branch: o.branch, url: urls[o.name] })) },
+      });
+    const request = (u: Unit, body: string) => ({ ticketId: t.id, repoPath: u.repoPath, worktree: u.dir, branch: u.branch, defaultBranch: u.defaultBranch, title, body, repoName: u.name });
+    this.handoff(t.id, "verify", "publish", "publish");
+
+    const bodies: Record<string, string> = {};
+    let dryRun = false;
+    for (const u of changed) {
+      const body = bodyFor(u);
+      const update = this.o.publisher.update?.bind(this.o.publisher);
+      // a repo that only changed in this follow-up has no PR yet: update() opens one
+      const res = (rev || u.prUrl) && update ? await update({ ...request(u, body), prUrl: u.prUrl }) : await this.o.publisher.publish(request(u, body));
+      dryRun = res.dryRun;
+      urls[u.name] = res.url ?? u.prUrl;
+      bodies[u.name] = body;
+      if (!res.dryRun) this.log(t.id, "info", u.prUrl ? `Pushed to ${u.branch} and updated ${urls[u.name]} (${u.name})` : `Opened PR ${urls[u.name]} (${u.name})`);
+    }
+    // PRs opened in this run did not know each other's links yet: add them now
+    if (!dryRun && changed.length > 1 && this.o.publisher.update) {
+      for (const u of changed) {
+        const body = bodyFor(u);
+        if (body === bodies[u.name] || !urls[u.name]) continue;
+        await this.o.publisher.update({ ...request(u, body), prUrl: urls[u.name] });
+        bodies[u.name] = body;
+      }
+    }
+    const names = changed.map((u) => u.name).join(", ");
+    if (dryRun) this.log(t.id, "info", rev ? `Dry run: revision ${rev.n} prepared for ${names}, nothing pushed.` : `Dry run: PR text prepared for ${names}, nothing pushed.`);
+    const untouched = unitsOf(t)
+      .map((u) => u.name)
+      .filter((n) => !(n in stats));
+    if (untouched.length) this.log(t.id, "info", `No changes in ${untouched.join(", ")}, so no PR there.`);
+
+    ctx.state.revision = undefined;
+    ctx.update({
+      status: dryRun ? "pr_ready" : "pr_opened",
+      repos: ctx.ticket.repos!.map((r) => ({ ...r, prUrl: urls[r.name] ?? r.prUrl })),
+      prUrl: changed.map((u) => urls[u.name]).find(Boolean) ?? t.prUrl,
+      prBody: changed.map((u) => `# ${u.name}\n\n${bodies[u.name]}`).join("\n\n---\n\n"),
+      stage: undefined,
+      lastPublishedAt: Date.now(),
+    });
+  }
+
   private async publish(ctx: Ctx): Promise<void> {
+    if (ctx.ticket.repos?.length) return this.publishRepos(ctx);
     const t = ctx.ticket;
     const files = await this.git.changedFiles(t.worktree!, t.baseSha!);
     if (!files.length) throw new TicketFailure("The developer made no changes, so there is nothing to open a PR for.");
     ctx.update({ stage: "publish" });
+    this.finishRevision(ctx);
     const rev = ctx.state.revision;
-    if (rev) {
-      const devId = this.revisionStages()[0]!;
-      const devRan = rev.stages.includes(devId);
-      const devSummary = String((ctx.state.outputs[devId] as { summary?: string } | undefined)?.summary ?? "");
-      const summary =
-        rev.kind === "update"
-          ? rev.conflicts.length
-            ? `Merged the latest \`${t.defaultBranch}\` and resolved conflicts in ${rev.conflicts.map((f) => `\`${f}\``).join(", ")}. ${devRan ? devSummary : ""}`.trim()
-            : `Merged the latest \`${t.defaultBranch}\`; no conflicts.${devRan ? ` ${devSummary}` : ""}`
-          : devSummary || "Done.";
-      this.setRevision(ctx, { status: "done", endedAt: Date.now(), summary });
-    }
     const diffStat = await this.git.diffStat(t.worktree!, t.baseSha!);
     const body = buildPrBody({
       ticket: ctx.ticket,
