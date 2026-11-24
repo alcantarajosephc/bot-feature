@@ -70,9 +70,29 @@ export interface RevisionInfo {
   summary?: string;
 }
 
+/** One repository of a multi-repo ticket (a workspace folder holding several git repos). */
+export interface TicketRepo {
+  /** Folder name in the workspace (e.g. "web"); also the sub-folder in the ticket's workspace. */
+  name: string;
+  /** The developer's own checkout (never modified; worktrees are created from it). */
+  repoPath: string;
+  worktree: string;
+  branch: string;
+  baseSha: string;
+  defaultBranch: string;
+  prUrl?: string;
+}
+
 export interface Ticket extends TicketInput {
   id: string;
+  /** A git repo, or a workspace folder that holds several repos (see `repos`). */
   repoPath: string;
+  /**
+   * Set when the ticket spans several repos. Then `worktree` is the ticket's workspace folder
+   * (one worktree per repo inside it), `branch` is the branch name shared by all repos, and
+   * `baseSha`/`defaultBranch` are unused (each repo has its own).
+   */
+  repos?: TicketRepo[];
   status: TicketStatus;
   stage?: string;
   branch?: string;

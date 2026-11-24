@@ -8,12 +8,16 @@ export function loadPrompt(promptsDir: string, file: string): string {
   return fs.readFileSync(path.join(promptsDir, file), "utf8");
 }
 
-export function buildSystemPrompt(promptsDir: string, role: RoleConfig): string {
+/** `guidelines` is the project's own CLAUDE.md/AGENTS.md section (see guidelines.ts), placed after the team rules. */
+export function buildSystemPrompt(promptsDir: string, role: RoleConfig, guidelines = ""): string {
   return [
     loadPrompt(promptsDir, "_team.md"),
     `# You are ${role.name}, the team's ${role.title}\n\nPersonality: ${role.personality}`,
     loadPrompt(promptsDir, role.promptFile),
-  ].join("\n\n");
+    guidelines,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export interface PromptContext {
@@ -45,15 +49,24 @@ export function buildUserPrompt(c: PromptContext): string {
   }
   parts.push(`# Your task\n\n${task}`);
 
-  const ws = [
-    `- Working directory: \`${t.worktree}\` (isolated git worktree on branch \`${t.branch}\`)`,
-    `- Base commit (the default branch when work started): \`${t.baseSha}\``,
-    `- Commands you may run: ${c.commands.length ? c.commands.map((x) => `\`${x}\``).join(", ") : "none"}`,
-  ];
-  if (c.testCommand) ws.push(`- Project test command: \`${c.testCommand}\``);
+  const multi = !!t.repos?.length;
+  const ws = multi
+    ? [
+        `- Working directory: \`${t.worktree}\`. This ticket spans ${t.repos!.length} repositories; each sub-folder below is its own isolated git worktree on branch \`${t.branch}\`:`,
+        ...t.repos!.map((r) => `  - \`${r.name}/\` (default branch \`${r.defaultBranch}\`, base commit \`${r.baseSha}\`)`),
+        "- Change only the repositories the ticket really needs. A repository you leave untouched gets no pull request.",
+        "- The working directory itself is not a git repository. Run commands from inside a repository: run `cd <repo>` as its own command first.",
+        `- Commands you may run: ${c.commands.length ? c.commands.map((x) => `\`${x}\``).join(", ") : "none"}`,
+      ]
+    : [
+        `- Working directory: \`${t.worktree}\` (isolated git worktree on branch \`${t.branch}\`)`,
+        `- Base commit (the default branch when work started): \`${t.baseSha}\``,
+        `- Commands you may run: ${c.commands.length ? c.commands.map((x) => `\`${x}\``).join(", ") : "none"}`,
+      ];
+  if (c.testCommand) ws.push(`- ${multi ? "Test commands" : "Project test command"}: ${multi ? c.testCommand : `\`${c.testCommand}\``}`);
   if (c.changedFiles?.length) ws.push(`- Files changed so far: ${c.changedFiles.map((f) => `\`${f}\``).join(", ")}`);
   parts.push(`# Workspace\n\n${ws.join("\n")}`);
-  if (c.diffStat) parts.push(`# Diff summary (\`git diff ${t.baseSha}..HEAD --stat\`)\n\n\`\`\`\n${c.diffStat}\n\`\`\``);
+  if (c.diffStat) parts.push(`# Diff summary (${multi ? "`git diff <base>..HEAD --stat` per repository" : `\`git diff ${t.baseSha}..HEAD --stat\``})\n\n\`\`\`\n${c.diffStat}\n\`\`\``);
   if (c.dependencyChanges?.length) {
     parts.push(
       `# New or changed dependencies (must be reviewed)\n\n${c.dependencyChanges

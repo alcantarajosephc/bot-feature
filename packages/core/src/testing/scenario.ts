@@ -23,6 +23,10 @@ export interface ScenarioOptions {
   usageLimitMs?: number;
   /** Dev also tries to write this (absolute) path, which the guard must refuse. */
   writeOutside?: string;
+  /** Prefix for the files Dev and Docs write, e.g. "web/" for one repo of a multi-repo workspace. */
+  pathPrefix?: string;
+  /** More files Dev writes in round 1 (paths relative to the ticket's working directory, not prefixed). */
+  extraDevWrites?: { path: string; content: string }[];
   /** Artificial delay per stage, for UI demos. */
   delayMs?: number;
   /**
@@ -140,6 +144,8 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
           { path: "src/greet.js", content: broken ? BROKEN_IMPL : GOOD_IMPL },
           { path: "test/greet.test.js", content: TEST_FILE },
         ];
+        if (opts.pathPrefix) for (const w of writes) w.path = opts.pathPrefix + w.path;
+        if (opts.extraDevWrites && req.round === 1) writes.push(...opts.extraDevWrites);
         if (opts.writeOutside) writes.push({ path: opts.writeOutside, content: "should never be written" });
         const cr = opts.conflictResolution;
         if (cr && /conflict/i.test(req.prompt)) {
@@ -199,8 +205,8 @@ export function createScenario(opts: ScenarioOptions = {}): FakeScript {
         return {
           ...base,
           writes: [
-            { path: "README.md", content: fs.readFileSync(path.join(FIXTURE_DIR, "README.md"), "utf8").replace("- `subtract(a, b)` returns the difference.", "- `subtract(a, b)` returns the difference.\n- `greet(name)` returns a friendly greeting.") },
-            { path: "CHANGELOG.md", content: "# Changelog\n\n## Unreleased\n\n- Added `greet(name)`.\n\n## 1.0.0\n\n- Initial release with `add` and `subtract`.\n" },
+            { path: `${opts.pathPrefix ?? ""}README.md`, content: fs.readFileSync(path.join(FIXTURE_DIR, "README.md"), "utf8").replace("- `subtract(a, b)` returns the difference.", "- `subtract(a, b)` returns the difference.\n- `greet(name)` returns a friendly greeting.") },
+            { path: `${opts.pathPrefix ?? ""}CHANGELOG.md`, content: "# Changelog\n\n## Unreleased\n\n- Added `greet(name)`.\n\n## 1.0.0\n\n- Initial release with `add` and `subtract`.\n" },
           ],
           output: { summary: "Documented greet in README and CHANGELOG.", updatedFiles: ["README.md", "CHANGELOG.md"], changelogEntry: "Added `greet(name)`." },
         };

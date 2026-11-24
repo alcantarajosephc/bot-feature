@@ -39,7 +39,15 @@ export function HistoryPage() {
                 <td>{tokens(t.usage)}</td>
                 <td className="nowrap">{duration((isActive(t) ? Date.now() : t.updatedAt) - t.createdAt)}</td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  {t.prUrl ? (
+                  {t.repos?.some((r) => r.prUrl) ? (
+                    t.repos
+                      .filter((r) => r.prUrl)
+                      .map((r) => (
+                        <a key={r.name} href={r.prUrl} target="_blank" rel="noreferrer" style={{ marginRight: 8 }}>
+                          {r.name} ↗
+                        </a>
+                      ))
+                  ) : t.prUrl ? (
                     <a href={t.prUrl} target="_blank" rel="noreferrer">
                       Open ↗
                     </a>
@@ -85,13 +93,22 @@ export function TicketDetailPage() {
         {t.branch && (
           <span>
             Branch <code>{t.branch}</code>
+            {t.repos?.length ? ` in ${t.repos.map((r) => r.name).join(", ")}` : ""}
           </span>
         )}
-        {t.prUrl && (
-          <a href={t.prUrl} target="_blank" rel="noreferrer">
-            Open PR ↗
-          </a>
-        )}
+        {t.repos?.some((r) => r.prUrl)
+          ? t.repos
+              .filter((r) => r.prUrl)
+              .map((r) => (
+                <a key={r.name} href={r.prUrl} target="_blank" rel="noreferrer">
+                  Open {r.name} PR ↗
+                </a>
+              ))
+          : t.prUrl && (
+              <a href={t.prUrl} target="_blank" rel="noreferrer">
+                Open PR ↗
+              </a>
+            )}
         <button
           onClick={() => {
             actions.selectTicket(t.id);

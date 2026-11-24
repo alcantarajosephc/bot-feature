@@ -18,6 +18,14 @@ export interface PrContext {
   history: Feedback[];
   diffStat?: string;
   verify?: { command: string; passed: boolean; output: string } | { skipped: string };
+  /** Multi-repo tickets: which repo this PR is for, and the ticket's PRs in the other repos. */
+  repo?: { name: string; related: { name: string; branch: string; url?: string }[] };
+}
+
+function relatedSection(repo: NonNullable<PrContext["repo"]>): string {
+  if (!repo.related.length) return "";
+  const items = repo.related.map((r) => `- **${r.name}**: ${r.url ?? `branch \`${r.branch}\` (pull request not opened yet)`}`);
+  return `## Related pull requests\n\nThis ticket changed more than one repository. This PR covers **${repo.name}**; review and merge it together with:\n\n${items.join("\n")}`;
 }
 
 const MAX_BODY = 60_000; // GitHub limit is 65,536 characters
@@ -100,6 +108,8 @@ export function buildPrBody(ctx: PrContext): string {
     `## Ticket\n\n**${t.title}**${ref ? ` (${ref})` : ""}\n\n${quote(t.description || "(no description)")}`,
     `## Summary\n\n${dev?.summary ?? "See the developer section below."}` + (ctx.diffStat ? `\n\n\`\`\`\n${ctx.diffStat}\n\`\`\`` : ""),
   ];
+  const related = ctx.repo ? relatedSection(ctx.repo) : "";
+  if (related) parts.splice(1, 0, related);
   const revs = revisionsSection(t.revisions);
   if (revs) parts.push(revs);
   if (ctx.verify) {

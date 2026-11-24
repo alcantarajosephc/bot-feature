@@ -55,6 +55,33 @@ function buildSampleRepo(): SampleRepo {
   };
 }
 
+export interface SampleWorkspace {
+  /** Plain folder (not a git repo) holding one sample repo per name. */
+  path: string;
+  /** Bare "origin" per repo name. */
+  remotes: Record<string, string>;
+  root: string;
+  cleanup(): void;
+}
+
+/** A folder holding several sample repos side by side (each with its own bare origin), plus a plain folder. */
+export function createSampleWorkspace(names: string[] = ["web", "api"]): SampleWorkspace {
+  if (!template || !fs.existsSync(template)) template = buildSampleRepo().root;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rb-ws-"));
+  const ws = path.join(root, "workspace");
+  fs.mkdirSync(path.join(ws, "notes"), { recursive: true }); // not a repo: ignored
+  const remotes: Record<string, string> = {};
+  for (const name of names) {
+    const repo = path.join(ws, name);
+    const remote = path.join(root, `${name}.git`);
+    fs.cpSync(path.join(template, "sample-target"), repo, { recursive: true });
+    fs.cpSync(path.join(template, "remote.git"), remote, { recursive: true });
+    git(repo, "remote", "set-url", "origin", remote);
+    remotes[name] = remote;
+  }
+  return { path: ws, remotes, root, cleanup: () => removeDir(root) };
+}
+
 export function removeDir(dir: string): void {
   try {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

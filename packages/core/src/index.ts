@@ -15,6 +15,7 @@ export * from "./pr/publishers.ts";
 export * from "./store/store.ts";
 export * from "./pipeline/team.ts";
 export * from "./pipeline/project.ts";
+export * from "./pipeline/guidelines.ts";
 export * from "./tickets/sources.ts";
 export * from "./tickets/github.ts";
 export * from "./tickets/jira.ts";

@@ -19,6 +19,10 @@ export interface PublicRole {
 
 export interface AppSettings {
   targetRepo: string;
+  workspaceRepos: string[];
+  repoTestCommands: Record<string, string>;
+  baseBranch: string;
+  repoBaseBranches: Record<string, string>;
   atlassianEmail: string;
   jiraSite: string;
   jiraProjectKey: string;

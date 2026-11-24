@@ -39,10 +39,20 @@ export interface IssuePreview {
 
 export interface Checks {
   claude: { installed: boolean; version?: string; loggedIn: boolean; authMethod?: string; subscriptionType?: string; error?: string };
-  repo: { ok: boolean; error?: string; root?: string; remoteUrl?: string; host?: "github" | "bitbucket" | "other"; repo?: string; isGitHub: boolean; githubRepo?: string; defaultBranch?: string };
+  repo: { ok: boolean; error?: string; root?: string; remoteUrl?: string; host?: "github" | "bitbucket" | "other"; repo?: string; isGitHub: boolean; githubRepo?: string; defaultBranch?: string; kind?: "repo" | "workspace"; repos?: WorkspaceRepoCheck[] };
   gh: { installed: boolean; loggedIn: boolean };
   bitbucket: ServiceCheck;
   jira: ServiceCheck;
+}
+
+/** One git repo found in a target folder that holds several. */
+export interface WorkspaceRepoCheck {
+  name: string;
+  ok: boolean;
+  error?: string;
+  host?: "github" | "bitbucket" | "other";
+  repo?: string;
+  defaultBranch?: string;
 }
 
 export interface ServiceCheck {

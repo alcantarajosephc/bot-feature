@@ -197,11 +197,20 @@ export async function buildApp(rt: Runtime, o: { serveWeb?: boolean } = {}): Pro
     return { secrets: rt.secrets.status() };
   });
 
+  /** The target folder: one repo (as before), or a workspace with the repos found in it. */
+  const repoCheck = async (dir: string) => {
+    const ws = await rt.git.inspectWorkspace(dir);
+    if (ws.kind === "repo") return { ...(ws.repo ?? { isGitHub: false }), ok: ws.ok, error: ws.error, kind: "repo" as const };
+    const repos = (ws.repos ?? []).map((r) => ({ name: r.name, ok: r.ok, error: r.error, host: r.host, repo: r.repo, defaultBranch: r.defaultBranch }));
+    const hosts = [...new Set(repos.filter((r) => r.ok).map((r) => r.host))];
+    return { ok: ws.ok, error: ws.error, kind: "workspace" as const, root: ws.root, isGitHub: false, host: hosts.length === 1 ? hosts[0] : undefined, repos };
+  };
+
   app.get("/api/checks", async () => {
     const s = rt.getSettings();
     const [claude, repo, gh, atlassian] = await Promise.all([
       checkClaudeCli().then(({ installed, version, loggedIn, authMethod, subscriptionType, error }) => ({ installed, version, loggedIn, authMethod, subscriptionType, error })),
-      s.targetRepo ? rt.git.inspectRepo(s.targetRepo) : Promise.resolve({ ok: false, isGitHub: false, error: "No target project selected." }),
+      s.targetRepo ? repoCheck(s.targetRepo) : Promise.resolve({ ok: false, isGitHub: false, error: "No target project selected." }),
       exec("gh", ["auth", "status"], { timeoutMs: 20_000 })
         .then((r) => ({ installed: true, loggedIn: r.code === 0 }))
         .catch(() => ({ installed: false, loggedIn: false })),

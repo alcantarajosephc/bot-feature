@@ -11,6 +11,11 @@ export interface GuardPolicy {
   commands: string[];
   /** Read-only web research (WebSearch/WebFetch). Off unless a role explicitly needs it. */
   web?: boolean;
+  /**
+   * Globs (relative to root) no role may write, whatever its write scope: the developers' own
+   * AI-assistant and editor setup (CLAUDE.md, .claude/, AGENTS.md, .vscode/…).
+   */
+  protect?: string[];
 }
 
 export interface Decision {
@@ -43,7 +48,10 @@ export function checkCommand(command: string, allowlist: string[]): CommandCheck
   const cmd = command.trim();
   if (!cmd) return { ok: false, reason: "Empty command." };
   if (FORBIDDEN_CHARS.test(cmd)) {
-    return { ok: false, reason: "Shell operators (; & | < > ` $ ( ) { } and newlines) are not allowed. Run one plain command at a time." };
+    return {
+      ok: false,
+      reason: "Shell operators (; & | < > ` $ ( ) { } and newlines) are not allowed. Run one plain command at a time (to work in a sub-folder, run `cd <folder>` on its own first).",
+    };
   }
   if (NEVER.some((re) => re.test(cmd))) {
     return { ok: false, reason: "This command is reserved for the orchestrator (pushing, PRs and branch changes are never done by agents)." };
@@ -115,7 +123,13 @@ export function evaluateToolUse(tool: string, input: Record<string, unknown>, po
       if (typeof v !== "string" || !v) return { allow: false, reason: `${tool}: missing ${key}.` };
       const rel = relativeInside(policy.root, v);
       if (rel === undefined) return { allow: false, reason: `${tool}: ${v} is outside the ticket workspace.` };
-      if (rel === ".git" || rel.startsWith(".git/")) return { allow: false, reason: "Writing inside .git is not allowed." };
+      if (rel === ".git" || rel.startsWith(".git/") || /(^|\/)\.git(\/|$)/.test(rel)) return { allow: false, reason: "Writing inside .git is not allowed." };
+      if (policy.protect?.some((g) => globToRegExp(g).test(rel))) {
+        return {
+          allow: false,
+          reason: `${tool}: ${rel} is part of the developers' own AI-assistant or editor setup, which the team never changes. If it needs updating, say so in your summary instead.`,
+        };
+      }
       if (policy.write !== "all" && !policy.write.some((g) => globToRegExp(g).test(rel))) {
         return { allow: false, reason: `${tool}: this role may only write ${policy.write.join(", ")}.` };
       }
@@ -128,7 +142,14 @@ export function evaluateToolUse(tool: string, input: Record<string, unknown>, po
   }
 
   if (tool === "Bash" || tool === "PowerShell") {
-    const r = checkCommand(String(input.command ?? ""), policy.commands);
+    const command = String(input.command ?? "").trim();
+    // changing into a folder of the workspace (e.g. one repo of a multi-repo ticket) is always fine
+    const cd = /^(?:cd|Set-Location)\s+(?:"([^"]+)"|'([^']+)'|([^\s"']+))$/i.exec(command);
+    if (cd && !FORBIDDEN_CHARS.test(command)) {
+      const target = cd[1] ?? cd[2] ?? cd[3]!;
+      return relativeInside(policy.root, target) !== undefined ? { allow: true } : { allow: false, reason: `cd: ${target} is outside the ticket workspace.` };
+    }
+    const r = checkCommand(command, policy.commands);
     return r.ok ? { allow: true } : { allow: false, reason: r.reason };
   }
 

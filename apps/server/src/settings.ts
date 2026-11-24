@@ -3,9 +3,27 @@ import path from "node:path";
 import { z } from "zod";
 import { DEFAULT_LAB_SETTINGS, DEFAULT_SETTINGS, normalizeJiraSite, type AtlassianAuth, type Store, type TeamSettings } from "@agents/core";
 
+/** A branch name we can safely hand to git: no option-like "-x", no "..", only ordinary ref characters. Empty = not set. */
+const branchName = z
+  .string()
+  .trim()
+  .max(200)
+  .refine((b) => !b || (/^[A-Za-z0-9._/-]+$/.test(b) && !b.startsWith("-") && !b.startsWith("/") && !b.endsWith("/") && !b.endsWith(".lock") && !b.includes("..") && !b.includes("//")), "Not a valid branch name.");
+
 export const appSettingsSchema = z.object({
-  /** Local folder of the target project (a git repo with a GitHub or Bitbucket Cloud remote). */
+  /**
+   * Local folder of the target project: a git repo with a GitHub or Bitbucket Cloud remote, or a folder that
+   * holds several such repos (e.g. a frontend and a backend side by side).
+   */
   targetRepo: z.string().max(1000),
+  /** For a folder holding several repos: which ones tickets may change (folder names). Empty = all. */
+  workspaceRepos: z.array(z.string().trim().min(1).max(200)).max(50),
+  /** For a folder holding several repos: test command per repo folder name. */
+  repoTestCommands: z.record(z.string().max(200), z.string().trim().max(300)).transform((r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v))),
+  /** Branch new tickets start from and PRs target (empty = the remote's default branch). */
+  baseBranch: branchName,
+  /** For a folder holding several repos: that branch per repo folder name (missing/empty = the repo's default branch). */
+  repoBaseBranches: z.record(z.string().max(200), branchName).transform((r) => Object.fromEntries(Object.entries(r).filter(([, v]) => v))),
   /** Atlassian account email, used with the Bitbucket and Jira API tokens (env: ATLASSIAN_EMAIL). */
   atlassianEmail: z.string().trim().max(200).refine((s) => !s || /^[^\s@]+@[^\s@]+$/.test(s), "Enter a valid email address."),
   /** Jira Cloud site, e.g. "your-company.atlassian.net". Tokens are only ever sent to this host. */
@@ -74,6 +92,10 @@ export function teamSettingsOf(s: AppSettings): TeamSettings {
     testCommand: s.testCommand,
     installDeps: s.installDeps,
     installCommand: s.installCommand,
+    workspaceRepos: s.workspaceRepos,
+    repoTestCommands: s.repoTestCommands,
+    baseBranch: s.baseBranch,
+    repoBaseBranches: s.repoBaseBranches,
   };
 }
 

@@ -12,6 +12,13 @@ export interface PublishRequest {
   defaultBranch: string;
   title: string;
   body: string;
+  /** Multi-repo tickets: the repo (workspace folder name) this PR is for. */
+  repoName?: string;
+}
+
+/** "pr.md", or "pr-<repo>.md" for one repo of a multi-repo ticket. */
+function prFileName(repoName?: string): string {
+  return repoName ? `pr-${repoName.replace(/[^A-Za-z0-9._-]/g, "_")}.md` : "pr.md";
 }
 
 export interface PublishResult {
@@ -39,7 +46,7 @@ export class DryRunPublisher implements PrPublisher {
     this.published.push(req);
     const dir = path.join(this.dataDir, "tickets", req.ticketId);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "pr.md"), `# ${req.title}\n\n${req.body}`);
+    fs.writeFileSync(path.join(dir, prFileName(req.repoName)), `# ${req.title}\n\n${req.body}`);
     return { dryRun: true };
   }
 
@@ -48,7 +55,7 @@ export class DryRunPublisher implements PrPublisher {
     this.updated.push(req);
     const dir = path.join(this.dataDir, "tickets", req.ticketId);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "pr.md"), `# ${req.title}\n\n${req.body}`);
+    fs.writeFileSync(path.join(dir, prFileName(req.repoName)), `# ${req.title}\n\n${req.body}`);
     return { url: req.prUrl, dryRun: true };
   }
 }

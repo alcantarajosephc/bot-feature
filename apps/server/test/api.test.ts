@@ -206,3 +206,47 @@ describe("API", () => {
     expect(r.statusCode).toBe(400);
   });
 });
+
+describe("folder with several repos", () => {
+  it("reports each repo of a workspace folder and stores the repo choice and per-repo test commands", async () => {
+    const { createSampleWorkspace } = await import("../../../packages/core/src/testing/sampleRepo.ts");
+    const ws = createSampleWorkspace(["web", "api"]);
+    const before = rt.getSettings().targetRepo;
+    try {
+      const put = await app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        headers: H,
+        payload: { targetRepo: ws.path, workspaceRepos: ["web"], repoTestCommands: { web: " npm test ", api: "" } },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().settings.workspaceRepos).toEqual(["web"]);
+      expect(put.json().settings.repoTestCommands).toEqual({ web: "npm test" });
+
+      const checks = (await app.inject({ method: "GET", url: "/api/checks", headers: H })).json();
+      expect(checks.repo).toMatchObject({ ok: true, kind: "workspace", host: "other" });
+      expect(checks.repo.repos.map((r: { name: string; ok: boolean }) => [r.name, r.ok])).toEqual([
+        ["api", true],
+        ["web", true],
+      ]);
+    } finally {
+      await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { targetRepo: before, workspaceRepos: [], repoTestCommands: {} } });
+      ws.cleanup();
+    }
+  });
+  it("stores PR target branches and refuses names git would misread", async () => {
+    const before = rt.getSettings();
+    try {
+      const ok = await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { baseBranch: " release ", repoBaseBranches: { server: "release/2.0", web: "" } } });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().settings.baseBranch).toBe("release");
+      expect(ok.json().settings.repoBaseBranches).toEqual({ server: "release/2.0" });
+      for (const bad of ["--upload-pack=x", "a..b", "feature branch", "x.lock", "a//b", "/abs"]) {
+        expect((await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { baseBranch: bad } })).statusCode, bad).toBe(400);
+        expect((await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { repoBaseBranches: { api: bad } } })).statusCode, bad).toBe(400);
+      }
+    } finally {
+      await app.inject({ method: "PUT", url: "/api/settings", headers: H, payload: { baseBranch: before.baseBranch ?? "", repoBaseBranches: before.repoBaseBranches ?? {} } });
+    }
+  });
+});

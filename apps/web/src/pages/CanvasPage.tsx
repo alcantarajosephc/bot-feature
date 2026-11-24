@@ -197,11 +197,20 @@ function PrNode() {
             </a>
           )}
           <TicketBadge status={t.status} />
-          {t.status === "pr_opened" && t.prUrl && (
-            <a className="button primary" href={t.prUrl} target="_blank" rel="noreferrer" data-testid="pr-link">
-              Open PR ↗
-            </a>
-          )}
+          {t.status === "pr_opened" &&
+            (t.repos?.some((r) => r.prUrl)
+              ? t.repos
+                  .filter((r) => r.prUrl)
+                  .map((r) => (
+                    <a key={r.name} className="button primary" href={r.prUrl} target="_blank" rel="noreferrer" data-testid="pr-link">
+                      Open {r.name} PR ↗
+                    </a>
+                  ))
+              : t.prUrl && (
+                  <a className="button primary" href={t.prUrl} target="_blank" rel="noreferrer" data-testid="pr-link">
+                    Open PR ↗
+                  </a>
+                ))}
           {t.prBody && (
             <button onClick={() => setOpen("pr")} data-testid="view-pr">
               View PR description

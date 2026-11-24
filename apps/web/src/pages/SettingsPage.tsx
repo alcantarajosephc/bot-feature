@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Checks, type SecretKey, type SecretStatus, type ServiceCheck } from "../api.ts";
+import { api, type Checks, type SecretKey, type SecretStatus, type ServiceCheck, type WorkspaceRepoCheck } from "../api.ts";
 import { actions, useApp } from "../store.ts";
 import type { AppSettings } from "../types.ts";
 
@@ -35,6 +35,68 @@ function SecretField({ label, k, secrets, placeholder, onSave }: { label: string
         )}
       </div>
     </label>
+  );
+}
+
+const HOST_LABEL = { github: "GitHub", bitbucket: "Bitbucket", other: "other host (dry run only)" } as const;
+
+/** A target folder holding several repos: pick which ones tickets may change, and each one's test command. */
+function WorkspaceRepos({ repos, s, up }: { repos: WorkspaceRepoCheck[]; s: AppSettings; up: (p: Partial<AppSettings>) => void }) {
+  const usable = repos.filter((r) => r.ok).map((r) => r.name);
+  const selected = s.workspaceRepos.length ? s.workspaceRepos : usable;
+  const toggle = (name: string, on: boolean) => {
+    const next = on ? [...new Set([...selected, name])] : selected.filter((n) => n !== name);
+    // everything selected is stored as "all", so repos added to the folder later are included too
+    up({ workspaceRepos: usable.every((n) => next.includes(n)) ? [] : next });
+  };
+  return (
+    <div data-testid="workspace-repos">
+      <p className="small muted">
+        This folder holds several git repositories. A ticket can change any of the selected ones; each changed repository gets its own branch (same name everywhere) and its own PR, linked to the others. The new branch starts from the PR target branch, and the PR goes back into it.
+      </p>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Use</th>
+            <th>Repository</th>
+            <th>Remote</th>
+            <th>PR target branch (empty = default)</th>
+            <th>Test command (empty = <code>npm test</code> if present)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {repos.map((r) => (
+            <tr key={r.name}>
+              <td>
+                <input type="checkbox" aria-label={`Use ${r.name}`} disabled={!r.ok} checked={r.ok && selected.includes(r.name)} onChange={(e) => toggle(r.name, e.target.checked)} />
+              </td>
+              <td>
+                <code>{r.name}</code>
+              </td>
+              <td className="small">{r.ok ? `${HOST_LABEL[r.host ?? "other"]}: ${r.repo ?? "?"} (${r.defaultBranch})` : <span className="muted">{r.error}</span>}</td>
+              <td>
+                <input
+                  aria-label={`PR target branch for ${r.name}`}
+                  disabled={!r.ok}
+                  value={s.repoBaseBranches[r.name] ?? ""}
+                  onChange={(e) => up({ repoBaseBranches: { ...s.repoBaseBranches, [r.name]: e.target.value } })}
+                  placeholder={r.defaultBranch ?? "main"}
+                />
+              </td>
+              <td>
+                <input
+                  aria-label={`Test command for ${r.name}`}
+                  disabled={!r.ok}
+                  value={s.repoTestCommands[r.name] ?? ""}
+                  onChange={(e) => up({ repoTestCommands: { ...s.repoTestCommands, [r.name]: e.target.value } })}
+                  placeholder="npm test"
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -104,10 +166,13 @@ export function SettingsPage() {
       <section className="card">
         <h2>Target project</h2>
         <label>
-          Local folder (a git repo with a GitHub or Bitbucket remote)
+          Local folder: a git repo with a GitHub or Bitbucket remote, or a folder holding several repos (e.g. frontend and backend)
           <input value={s.targetRepo} onChange={(e) => up({ targetRepo: e.target.value })} placeholder="D:\code\my-app" aria-label="Target project folder" />
         </label>
-        {checks && (
+        {checks?.repo.kind === "workspace" && checks.repo.repos && (
+          <WorkspaceRepos repos={checks.repo.repos} s={s} up={up} />
+        )}
+        {checks && checks.repo.kind !== "workspace" && (
           <ul className="checks" data-testid="repo-checks">
             <Check ok={checks.repo.ok}>{checks.repo.ok ? `Git repository found (default branch ${checks.repo.defaultBranch})` : checks.repo.error}</Check>
             {checks.repo.ok && (
@@ -190,7 +255,14 @@ export function SettingsPage() {
         <label className="inline">
           <input type="checkbox" checked={s.dryRun} onChange={(e) => up({ dryRun: e.target.checked })} aria-label="Dry run" /> Dry run: prepare the PR text but don't push or open a PR
         </label>
-        <p className="small muted">When off, the team pushes an <code>agents/…</code> branch and opens a normal PR against the default branch. It never pushes to the default branch and never merges.</p>
+        <p className="small muted">When off, the team pushes an <code>agents/…</code> branch and opens a normal PR against the PR target branch. It never pushes to that branch and never merges.</p>
+        {checks?.repo.kind !== "workspace" && (
+          <label>
+            PR target branch: new branches start from it and PRs go back into it (empty = the remote's default branch{checks?.repo.defaultBranch ? `, ${checks.repo.defaultBranch}` : ""})
+            <input value={s.baseBranch} onChange={(e) => up({ baseBranch: e.target.value })} placeholder={checks?.repo.defaultBranch ?? "main"} aria-label="PR target branch" />
+          </label>
+        )}
+        {checks?.repo.kind === "workspace" && <p className="small muted">For a folder with several repos, set the PR target branch per repo under Target project.</p>}
       </section>
 
       <section className="card">
@@ -224,7 +296,7 @@ export function SettingsPage() {
             <input type="number" min={1} value={s.usageLimitRetryMinutes} onChange={(e) => up({ usageLimitRetryMinutes: Number(e.target.value) })} />
           </label>
           <label>
-            Test command for the final gate (empty = <code>npm test</code> if present)
+            Test command for the final gate (empty = <code>npm test</code> if present; for a folder of several repos, set it per repo above)
             <input value={s.testCommand} onChange={(e) => up({ testCommand: e.target.value })} placeholder="npm test" />
           </label>
         </div>
